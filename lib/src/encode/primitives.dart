@@ -2,6 +2,7 @@ import '../types.dart';
 import '../utilities/constants.dart';
 import '../utilities/string-utils.dart';
 import '../utilities/validation.dart';
+import '../utilities/int64_bounds_import.dart';
 
 // #region Primitive encoding
 
@@ -24,7 +25,7 @@ String encodePrimitive(JsonPrimitive value, [String? delimiter]) {
       if (value == value.truncateToDouble() && value.isFinite) {
         // It's a whole number
         // Check if it fits in int range
-        if (value >= -9223372036854775808 && value <= 9223372036854775807) {
+        if (isInInt64Range(value)) {
           // Safe to convert to int
           return value.toInt().toString();
         } else {
@@ -72,7 +73,8 @@ String encodeKey(String key) {
 // #region Value joining
 
 /// Encodes and joins primitive values with a delimiter.
-String encodeAndJoinPrimitives(List<JsonPrimitive> values, [String delimiter = COMMA]) {
+String encodeAndJoinPrimitives(List<JsonPrimitive> values,
+    [String delimiter = COMMA]) {
   return values.map((v) => encodePrimitive(v, delimiter)).join(delimiter);
 }
 
@@ -98,7 +100,8 @@ String formatHeader(
   }
 
   // Only include delimiter if it's not the default (comma)
-  final delimiterSuffix = delimiterValue != DEFAULT_DELIMITER ? delimiterValue : '';
+  final delimiterSuffix =
+      delimiterValue != DEFAULT_DELIMITER ? delimiterValue : '';
   header += '[$lengthMarkerValue$length$delimiterSuffix]';
 
   if (fields != null) {
