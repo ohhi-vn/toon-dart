@@ -13,6 +13,7 @@ class ScanResult {
 }
 
 /// Line cursor for traversing parsed lines.
+/// Optimized for fast traversal with minimal overhead.
 class LineCursor {
   final List<ParsedLine> _lines;
   int _index;
@@ -67,60 +68,111 @@ class LineCursor {
 }
 
 /// Converts source string to parsed lines.
+/// Optimized for performance with efficient string operations.
 ScanResult toParsedLines(String source, int indentSize, bool strict) {
-  if (source.trim().isEmpty) {
+  // Fast path for empty input
+  if (source.isEmpty) {
     return const ScanResult(lines: [], blankLines: []);
   }
 
-  final lines = source.split('\n');
+  // Check if source is all whitespace
+  bool allWhitespace = true;
+  for (int i = 0; i < source.length; i++) {
+    final char = source.codeUnitAt(i);
+    if (char != 0x20 && char != 0x0A && char != 0x0D && char != 0x09) {
+      allWhitespace = false;
+      break;
+    }
+  }
+  if (allWhitespace) {
+    return const ScanResult(lines: [], blankLines: []);
+  }
+
   final parsed = <ParsedLine>[];
   final blankLines = <BlankLineInfo>[];
 
-  for (int i = 0; i < lines.length; i++) {
-    final raw = lines[i];
-    final lineNumber = i + 1;
-    int indent = 0;
-    while (indent < raw.length && raw[indent] == SPACE) {
-      indent++;
-    }
+  // Manual line splitting for better performance
+  int lineStart = 0;
+  int lineNumber = 0;
 
-    final content = raw.substring(indent);
+  for (int i = 0; i <= source.length; i++) {
+    final isEnd = i == source.length;
+    final isNewline = !isEnd && source.codeUnitAt(i) == 0x0A; // '\n'
 
-    // Track blank lines
-    if (content.trim().isEmpty) {
-      final depth = computeDepthFromIndent(indent, indentSize);
-      blankLines.add(BlankLineInfo(lineNumber: lineNumber, indent: indent, depth: depth));
-      continue;
-    }
+    if (isEnd || isNewline) {
+      lineNumber++;
+      final lineEnd = isEnd ? source.length : i;
+      final raw = source.substring(lineStart, lineEnd);
 
-    final depth = computeDepthFromIndent(indent, indentSize);
-
-    // Strict mode validation
-    if (strict) {
-      // Find the full leading whitespace region (spaces and tabs)
-      int wsEnd = 0;
-      while (wsEnd < raw.length && (raw[wsEnd] == SPACE || raw[wsEnd] == TAB)) {
-        wsEnd++;
+      // Skip trailing newline
+      if (isEnd && raw.isEmpty) {
+        break;
       }
 
-      // Check for tabs in leading whitespace (before actual content)
-      if (raw.substring(0, wsEnd).contains(TAB)) {
-        throw FormatException('Line $lineNumber: Tabs are not allowed in indentation in strict mode');
+      // Count leading spaces efficiently
+      int indent = 0;
+      final rawLen = raw.length;
+      while (indent < rawLen && raw.codeUnitAt(indent) == 0x20) {
+        // ' '
+        indent++;
+      }
+      // Also count tabs in leading whitespace for proper strict mode validation
+      int tabCount = 0;
+      int pos = indent;
+      while (pos < rawLen && raw.codeUnitAt(pos) == 0x09) {
+        // '\t'
+        tabCount++;
+        pos++;
       }
 
-      // Check for exact multiples of indentSize
-      if (indent > 0 && indent % indentSize != 0) {
-        throw FormatException('Line $lineNumber: Indentation must be exact multiple of $indentSize, but found $indent spaces');
+      // Check if line is blank (only whitespace)
+      bool isBlank = pos == rawLen;
+      if (!isBlank) {
+        // Check remaining characters
+        for (int j = pos; j < rawLen; j++) {
+          final char = raw.codeUnitAt(j);
+          if (char != 0x20 && char != 0x09) {
+            isBlank = false;
+            break;
+          }
+        }
+        isBlank = pos == rawLen || isBlank;
       }
+
+      if (isBlank) {
+        final depth = indent ~/ indentSize;
+        blankLines.add(BlankLineInfo(
+            lineNumber: lineNumber, indent: indent, depth: depth));
+      } else {
+        final content = raw.substring(pos);
+        final depth = indent ~/ indentSize;
+
+        // Strict mode validation
+        if (strict) {
+          // Check for tabs in leading whitespace
+          if (tabCount > 0) {
+            throw FormatException(
+                'Line $lineNumber: Tabs are not allowed in indentation in strict mode');
+          }
+
+          // Check for exact multiples of indentSize
+          if (indent > 0 && indent % indentSize != 0) {
+            throw FormatException(
+                'Line $lineNumber: Indentation must be exact multiple of $indentSize, but found $indent spaces');
+          }
+        }
+
+        parsed.add(ParsedLine(
+          raw: raw,
+          indent: indent,
+          content: content,
+          depth: depth,
+          lineNumber: lineNumber,
+        ));
+      }
+
+      lineStart = i + 1;
     }
-
-    parsed.add(ParsedLine(
-      raw: raw,
-      indent: indent,
-      content: content,
-      depth: depth,
-      lineNumber: lineNumber,
-    ));
   }
 
   return ScanResult(lines: parsed, blankLines: blankLines);

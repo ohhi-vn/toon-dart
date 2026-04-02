@@ -1,12 +1,20 @@
 import '../utilities/constants.dart';
 import 'literal-utils.dart';
 
+// Pre-compiled regexes for performance
+final _validUnquotedKeyRegex = RegExp(r'^[A-Z_][\w.]*$', caseSensitive: false);
+final _bracketsBracesRegex = RegExp(r'[[\]{}]');
+final _controlCharsRegex = RegExp(r'[\n\r\t]');
+final _numericLikeRegex =
+    RegExp(r'^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$', caseSensitive: false);
+final _leadingZeroRegex = RegExp(r'^0\d+$');
+
 /// Checks if a key can be used without quotes.
 ///
 /// Valid unquoted keys must start with a letter or underscore,
 /// followed by letters, digits, underscores, or dots.
 bool isValidUnquotedKey(String key) {
-  return RegExp(r'^[A-Z_][\w.]*$', caseSensitive: false).hasMatch(key);
+  return _validUnquotedKeyRegex.hasMatch(key);
 }
 
 /// Determines if a string value can be safely encoded without quotes.
@@ -25,7 +33,10 @@ bool isSafeUnquoted(String value, [String delimiter = COMMA]) {
     return false;
   }
 
-  if (value != value.trim()) {
+  // Check for leading/trailing whitespace efficiently
+  final firstChar = value.codeUnitAt(0);
+  final lastChar = value.codeUnitAt(value.length - 1);
+  if (firstChar <= 0x20 || lastChar <= 0x20) {
     return false;
   }
 
@@ -34,24 +45,22 @@ bool isSafeUnquoted(String value, [String delimiter = COMMA]) {
     return false;
   }
 
-  // Check for colon (always structural)
-  if (value.contains(':')) {
-    return false;
-  }
-
-  // Check for quotes and backslash (always need escaping)
-  if (value.contains('"') || value.contains('\\')) {
-    return false;
-  }
-
-  // Check for brackets and braces (always structural)
-  if (RegExp(r'[[\]{}]').hasMatch(value)) {
-    return false;
-  }
-
-  // Check for control characters (newline, carriage return, tab - always need quoting/escaping)
-  if (RegExp(r'[\n\r\t]').hasMatch(value)) {
-    return false;
+  // Check for structural characters and special chars efficiently
+  for (int i = 0; i < value.length; i++) {
+    final char = value.codeUnitAt(i);
+    switch (char) {
+      case 0x3A: // ':'
+      case 0x22: // '"'
+      case 0x5C: // '\\'
+      case 0x5B: // '['
+      case 0x5D: // ']'
+      case 0x7B: // '{'
+      case 0x7D: // '}'
+      case 0x0A: // '\n'
+      case 0x0D: // '\r'
+      case 0x09: // '\t'
+        return false;
+    }
   }
 
   // Check for the active delimiter
@@ -60,7 +69,8 @@ bool isSafeUnquoted(String value, [String delimiter = COMMA]) {
   }
 
   // Check for hyphen at start (list marker)
-  if (value.startsWith(LIST_ITEM_MARKER)) {
+  if (firstChar == 0x2D) {
+    // '-'
     return false;
   }
 
@@ -71,6 +81,5 @@ bool isSafeUnquoted(String value, [String delimiter = COMMA]) {
 ///
 /// Match numbers like `42`, `-3.14`, `1e-6`, `05`, etc.
 bool isNumericLike(String value) {
-  return RegExp(r'^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$', caseSensitive: false).hasMatch(value) ||
-      RegExp(r'^0\d+$').hasMatch(value);
+  return _numericLikeRegex.hasMatch(value) || _leadingZeroRegex.hasMatch(value);
 }

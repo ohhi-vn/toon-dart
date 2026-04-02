@@ -14,7 +14,7 @@ import 'src/decode/scanners.dart';
 import 'src/encode/encoders.dart';
 import 'src/encode/normalize.dart';
 import 'src/options.dart';
-import 'src/types.dart';
+// types.dart types are exported through public API, no direct import needed
 
 /// Encodes a value to TOON format.
 ///
@@ -34,7 +34,8 @@ String encode(Object? value, {EncodeOptions? options}) {
 /// Returns a Dart value (Map, List, or primitive) representing the parsed TOON data
 Object? decode(String input, {DecodeOptions? options}) {
   final resolvedOptions = (options ?? const DecodeOptions()).resolve();
-  final scanResult = toParsedLines(input, resolvedOptions.indent, resolvedOptions.strict);
+  final scanResult =
+      toParsedLines(input, resolvedOptions.indent, resolvedOptions.strict);
   final cursor = LineCursor(scanResult.lines, scanResult.blankLines);
   return decodeValueFromLines(cursor, resolvedOptions);
 }

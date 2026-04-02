@@ -2,9 +2,11 @@ import '../types.dart';
 import '../utilities/constants.dart';
 
 /// Line writer for building TOON output with proper indentation.
+/// Optimized to use StringBuffer for efficient string building.
 class LineWriter {
-  final List<String> _lines = [];
+  final StringBuffer _buffer = StringBuffer();
   final String _indentationString;
+  bool _hasContent = false;
 
   LineWriter(int indentSize) : _indentationString = ' ' * indentSize {
     if (indentSize <= 0) {
@@ -13,16 +15,32 @@ class LineWriter {
   }
 
   void push(Depth depth, String content) {
-    final indent = _indentationString * depth;
-    _lines.add('$indent$content');
+    if (_hasContent) {
+      _buffer.write('\n');
+    }
+    // Write indentation efficiently
+    for (int i = 0; i < depth; i++) {
+      _buffer.write(_indentationString);
+    }
+    _buffer.write(content);
+    _hasContent = true;
   }
 
   void pushListItem(Depth depth, String content) {
-    push(depth, '$LIST_ITEM_PREFIX$content');
+    if (_hasContent) {
+      _buffer.write('\n');
+    }
+    // Write indentation efficiently
+    for (int i = 0; i < depth; i++) {
+      _buffer.write(_indentationString);
+    }
+    _buffer.write(LIST_ITEM_PREFIX);
+    _buffer.write(content);
+    _hasContent = true;
   }
 
   @override
   String toString() {
-    return _lines.join('\n');
+    return _buffer.toString();
   }
 }

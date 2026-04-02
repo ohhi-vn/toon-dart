@@ -4,6 +4,12 @@ import 'normalize.dart';
 import 'primitives.dart';
 import 'writer.dart';
 
+// Per TOON spec §11.1: Delimiter-aware quoting rules
+// - Document delimiter: Used for quoting decisions in object field values (key: value)
+// - Active delimiter: Used for quoting decisions in inline arrays and tabular rows
+// The document delimiter is set by encoder options and applies throughout the document.
+// The active delimiter is declared by array headers and applies within their scope.
+
 // #region Encode normalized JsonValue
 
 /// Encodes a JsonValue to TOON format.
@@ -28,7 +34,8 @@ String encodeValue(JsonValue value, ResolvedEncodeOptions options) {
 // #region Object encoding
 
 /// Encodes a JSON object.
-void encodeObject(JsonObject value, LineWriter writer, Depth depth, ResolvedEncodeOptions options) {
+void encodeObject(JsonObject value, LineWriter writer, Depth depth,
+    ResolvedEncodeOptions options) {
   final keys = value.keys.toList();
 
   for (final key in keys) {
@@ -37,11 +44,14 @@ void encodeObject(JsonObject value, LineWriter writer, Depth depth, ResolvedEnco
 }
 
 /// Encodes a key-value pair.
-void encodeKeyValuePair(String key, JsonValue? value, LineWriter writer, Depth depth, ResolvedEncodeOptions options) {
+void encodeKeyValuePair(String key, JsonValue? value, LineWriter writer,
+    Depth depth, ResolvedEncodeOptions options) {
   final encodedKey = encodeKey(key);
 
   if (isJsonPrimitive(value)) {
-    writer.push(depth, '$encodedKey: ${encodePrimitive(value, options.delimiter)}');
+    // Per TOON spec §11.1: object field values use the document delimiter for quoting decisions
+    writer.push(
+        depth, '$encodedKey: ${encodePrimitive(value, options.delimiter)}');
   } else if (isJsonArray(value)) {
     encodeArray(key, value as JsonArray, writer, depth, options);
   } else if (isJsonObject(value)) {
@@ -51,7 +61,7 @@ void encodeKeyValuePair(String key, JsonValue? value, LineWriter writer, Depth d
       writer.push(depth, '$encodedKey:');
     } else {
       writer.push(depth, '$encodedKey:');
-      encodeObject(value as JsonObject, writer, depth + 1, options);
+      encodeObject(value, writer, depth + 1, options);
     }
   }
 }
@@ -69,23 +79,29 @@ void encodeArray(
   ResolvedEncodeOptions options,
 ) {
   if (value.isEmpty) {
-    final header = formatHeader(0, key: key, delimiter: options.delimiter, lengthMarker: options.lengthMarker);
+    final header = formatHeader(0,
+        key: key,
+        delimiter: options.delimiter,
+        lengthMarker: options.lengthMarker);
     writer.push(depth, header);
     return;
   }
 
   // Primitive array
   if (isArrayOfPrimitives(value)) {
-    final formatted = encodeInlineArrayLine(value, options.delimiter, key, options.lengthMarker);
+    final formatted = encodeInlineArrayLine(
+        value, options.delimiter, key, options.lengthMarker);
     writer.push(depth, formatted);
     return;
   }
 
   // Array of arrays (all primitives)
   if (isArrayOfArrays(value)) {
-    final allPrimitiveArrays = value.every((arr) => isArrayOfPrimitives(arr as JsonArray));
+    final allPrimitiveArrays =
+        value.every((arr) => isArrayOfPrimitives(arr as JsonArray));
     if (allPrimitiveArrays) {
-      encodeArrayOfArraysAsListItems(key, value.cast<JsonArray>(), writer, depth, options);
+      encodeArrayOfArraysAsListItems(
+          key, value.cast<JsonArray>(), writer, depth, options);
       return;
     }
   }
@@ -95,7 +111,8 @@ void encodeArray(
     final objects = value.cast<JsonObject>();
     final header = extractTabularHeader(objects);
     if (header != null) {
-      encodeArrayOfObjectsAsTabular(key, objects, header, writer, depth, options);
+      encodeArrayOfObjectsAsTabular(
+          key, objects, header, writer, depth, options);
     } else {
       encodeMixedArrayAsListItems(key, value, writer, depth, options);
     }
@@ -118,20 +135,26 @@ void encodeArrayOfArraysAsListItems(
   Depth depth,
   ResolvedEncodeOptions options,
 ) {
-  final header = formatHeader(values.length, key: prefix, delimiter: options.delimiter, lengthMarker: options.lengthMarker);
+  final header = formatHeader(values.length,
+      key: prefix,
+      delimiter: options.delimiter,
+      lengthMarker: options.lengthMarker);
   writer.push(depth, header);
 
   for (final arr in values) {
     if (isArrayOfPrimitives(arr)) {
-      final inline = encodeInlineArrayLine(arr, options.delimiter, null, options.lengthMarker);
+      final inline = encodeInlineArrayLine(
+          arr, options.delimiter, null, options.lengthMarker);
       writer.pushListItem(depth + 1, inline);
     }
   }
 }
 
 /// Encodes an inline array line.
-String encodeInlineArrayLine(List<JsonPrimitive> values, String delimiter, String? prefix, String? lengthMarker) {
-  final header = formatHeader(values.length, key: prefix, delimiter: delimiter, lengthMarker: lengthMarker);
+String encodeInlineArrayLine(List<JsonPrimitive> values, String delimiter,
+    String? prefix, String? lengthMarker) {
+  final header = formatHeader(values.length,
+      key: prefix, delimiter: delimiter, lengthMarker: lengthMarker);
   final joinedValue = encodeAndJoinPrimitives(values, delimiter);
   // Only add space if there are values
   if (values.isEmpty) {
@@ -153,8 +176,29 @@ void encodeArrayOfObjectsAsTabular(
   Depth depth,
   ResolvedEncodeOptions options,
 ) {
-  final formattedHeader = formatHeader(rows.length, key: prefix, fields: header, delimiter: options.delimiter, lengthMarker: options.lengthMarker);
-  writer.push(depth, formattedHeader);
+  // Optimized: build header string directly
+  final delimiter = options.delimiter;
+  final buffer = StringBuffer();
+  if (prefix != null) {
+    buffer.write(encodeKey(prefix));
+  }
+  buffer.write('[');
+  if (options.lengthMarker != null) {
+    buffer.write(options.lengthMarker);
+  }
+  buffer.write(rows.length);
+  if (delimiter != DEFAULT_DELIMITER) {
+    buffer.write(delimiter);
+  }
+  buffer.write(']{');
+  for (int i = 0; i < header.length; i++) {
+    if (i > 0) {
+      buffer.write(delimiter);
+    }
+    buffer.write(encodeKey(header[i]));
+  }
+  buffer.write('}:');
+  writer.push(depth, buffer.toString());
 
   writeTabularRows(rows, header, writer, depth + 1, options);
 }
@@ -163,7 +207,7 @@ void encodeArrayOfObjectsAsTabular(
 List<String>? extractTabularHeader(List<JsonObject> rows) {
   if (rows.isEmpty) return null;
 
-  final firstRow = rows[0]!;
+  final firstRow = rows[0];
   final firstKeys = firstRow.keys.toList();
   if (firstKeys.isEmpty) return null;
 
@@ -208,10 +252,17 @@ void writeTabularRows(
   Depth depth,
   ResolvedEncodeOptions options,
 ) {
+  final delimiter = options.delimiter;
   for (final row in rows) {
-    final values = header.map((key) => row[key]).toList();
-    final joinedValue = encodeAndJoinPrimitives(values as List<JsonPrimitive>, options.delimiter);
-    writer.push(depth, joinedValue);
+    // Optimized: encode values directly without creating intermediate list
+    final buffer = StringBuffer();
+    for (int i = 0; i < header.length; i++) {
+      if (i > 0) {
+        buffer.write(delimiter);
+      }
+      buffer.write(encodePrimitive(row[header[i]], delimiter));
+    }
+    writer.push(depth, buffer.toString());
   }
 }
 
@@ -227,8 +278,21 @@ void encodeMixedArrayAsListItems(
   Depth depth,
   ResolvedEncodeOptions options,
 ) {
-  final header = formatHeader(items.length, key: prefix, delimiter: options.delimiter, lengthMarker: options.lengthMarker);
-  writer.push(depth, header);
+  // Optimized: build header string directly
+  final buffer = StringBuffer();
+  if (prefix != null) {
+    buffer.write(encodeKey(prefix));
+  }
+  buffer.write('[');
+  if (options.lengthMarker != null) {
+    buffer.write(options.lengthMarker);
+  }
+  buffer.write(items.length);
+  if (options.delimiter != DEFAULT_DELIMITER) {
+    buffer.write(options.delimiter);
+  }
+  buffer.write(']:');
+  writer.push(depth, buffer.toString());
 
   for (final item in items) {
     encodeListItemValue(item, writer, depth + 1, options);
@@ -236,7 +300,11 @@ void encodeMixedArrayAsListItems(
 }
 
 /// Encodes an object as a list item.
-void encodeObjectAsListItem(JsonObject obj, LineWriter writer, Depth depth, ResolvedEncodeOptions options) {
+///
+/// Per TOON spec §10: When a list-item object has a tabular array as its first field,
+/// the tabular header appears on the hyphen line, rows at depth +2, other fields at depth +1.
+void encodeObjectAsListItem(JsonObject obj, LineWriter writer, Depth depth,
+    ResolvedEncodeOptions options) {
   final keys = obj.keys.toList();
   if (keys.isEmpty) {
     writer.push(depth, LIST_ITEM_MARKER);
@@ -244,41 +312,54 @@ void encodeObjectAsListItem(JsonObject obj, LineWriter writer, Depth depth, Reso
   }
 
   // First key-value on the same line as "- "
-  final firstKey = keys[0]!;
+  final firstKey = keys[0];
   final encodedKey = encodeKey(firstKey);
   final firstValue = obj[firstKey];
 
   if (isJsonPrimitive(firstValue)) {
-    writer.pushListItem(depth, '$encodedKey: ${encodePrimitive(firstValue, options.delimiter)}');
+    // Per TOON spec §11.1: Object field values use the document delimiter for quoting
+    writer.pushListItem(depth,
+        '$encodedKey: ${encodePrimitive(firstValue, options.delimiter)}');
   } else if (isJsonArray(firstValue)) {
     final arr = firstValue as JsonArray;
     if (isArrayOfPrimitives(arr)) {
       // Inline format for primitive arrays
-      final formatted = encodeInlineArrayLine(arr, options.delimiter, firstKey, options.lengthMarker);
+      final formatted = encodeInlineArrayLine(
+          arr, options.delimiter, firstKey, options.lengthMarker);
       writer.pushListItem(depth, formatted);
     } else if (isArrayOfObjects(arr)) {
       // Check if array of objects can use tabular format
       final objects = arr.cast<JsonObject>();
       final header = extractTabularHeader(objects);
       if (header != null) {
-        // Tabular format for uniform arrays of objects
-        final formattedHeader = formatHeader(arr.length, key: firstKey, fields: header, delimiter: options.delimiter, lengthMarker: options.lengthMarker);
+        // Per TOON spec §10: Tabular header on hyphen line, rows at depth +2
+        final formattedHeader = formatHeader(arr.length,
+            key: firstKey,
+            fields: header,
+            delimiter: options.delimiter,
+            lengthMarker: options.lengthMarker);
         writer.pushListItem(depth, formattedHeader);
-        writeTabularRows(objects, header, writer, depth + 1, options);
+        // Rows at depth +2 relative to the hyphen line
+        writeTabularRows(objects, header, writer, depth + 2, options);
       } else {
         // Fall back to list format for non-uniform arrays of objects
+        // Per TOON spec §10: When first field is not a tabular array,
+        // nested structures should be at depth +2 from hyphen line
         writer.pushListItem(depth, '$encodedKey[${arr.length}]:');
         for (final item in arr) {
-          encodeObjectAsListItem(item as JsonObject, writer, depth + 1, options);
+          encodeObjectAsListItem(
+              item as JsonObject, writer, depth + 2, options);
         }
       }
     } else {
       // Complex arrays on separate lines (array of arrays, etc.)
+      // Per TOON spec §10: When first field is not a tabular array,
+      // nested structures should be at depth +2 from hyphen line
       writer.pushListItem(depth, '$encodedKey[${arr.length}]:');
 
-      // Encode array contents at depth + 1
+      // Encode array contents at depth + 2 (relative to hyphen line)
       for (final item in arr) {
-        encodeListItemValue(item, writer, depth + 1, options);
+        encodeListItemValue(item, writer, depth + 2, options);
       }
     }
   } else if (isJsonObject(firstValue)) {
@@ -287,13 +368,13 @@ void encodeObjectAsListItem(JsonObject obj, LineWriter writer, Depth depth, Reso
       writer.pushListItem(depth, '$encodedKey:');
     } else {
       writer.pushListItem(depth, '$encodedKey:');
-      encodeObject(firstValue as JsonObject, writer, depth + 2, options);
+      encodeObject(firstValue, writer, depth + 2, options);
     }
   }
 
-  // Remaining keys on indented lines
+  // Remaining keys on indented lines at depth +1
   for (int i = 1; i < keys.length; i++) {
-    final key = keys[i]!;
+    final key = keys[i];
     encodeKeyValuePair(key, obj[key], writer, depth + 1, options);
   }
 }
@@ -314,8 +395,54 @@ void encodeListItemValue(
   } else if (isJsonArray(value)) {
     final arr = value as JsonArray;
     if (isArrayOfPrimitives(arr)) {
-      final inline = encodeInlineArrayLine(arr, options.delimiter, null, options.lengthMarker);
+      // Inline primitive array
+      final inline = encodeInlineArrayLine(
+          arr, options.delimiter, null, options.lengthMarker);
       writer.pushListItem(depth, inline);
+    } else if (isArrayOfArrays(arr)) {
+      // Array of arrays - use expanded list format
+      final header = formatHeader(arr.length,
+          delimiter: options.delimiter, lengthMarker: options.lengthMarker);
+      writer.pushListItem(depth, header);
+      for (final item in arr) {
+        if (isArrayOfPrimitives(item as JsonArray)) {
+          final inline = encodeInlineArrayLine(
+              item, options.delimiter, null, options.lengthMarker);
+          writer.pushListItem(depth + 1, inline);
+        } else {
+          // Recursively handle nested structures
+          encodeListItemValue(item, writer, depth + 1, options);
+        }
+      }
+    } else if (isArrayOfObjects(arr)) {
+      // Array of objects - check if tabular
+      final objects = arr.cast<JsonObject>();
+      final header = extractTabularHeader(objects);
+      if (header != null) {
+        // Tabular format
+        final formattedHeader = formatHeader(arr.length,
+            fields: header,
+            delimiter: options.delimiter,
+            lengthMarker: options.lengthMarker);
+        writer.pushListItem(depth, formattedHeader);
+        writeTabularRows(objects, header, writer, depth + 1, options);
+      } else {
+        // Expanded list format
+        final listHeader = formatHeader(arr.length,
+            delimiter: options.delimiter, lengthMarker: options.lengthMarker);
+        writer.pushListItem(depth, listHeader);
+        for (final item in objects) {
+          encodeObjectAsListItem(item, writer, depth + 1, options);
+        }
+      }
+    } else {
+      // Mixed array - use expanded list format
+      final header = formatHeader(arr.length,
+          delimiter: options.delimiter, lengthMarker: options.lengthMarker);
+      writer.pushListItem(depth, header);
+      for (final item in arr) {
+        encodeListItemValue(item, writer, depth + 1, options);
+      }
     }
   } else if (isJsonObject(value)) {
     encodeObjectAsListItem(value as JsonObject, writer, depth, options);

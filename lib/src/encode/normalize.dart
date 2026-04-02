@@ -25,7 +25,7 @@ JsonValue normalizeValue(Object? value) {
     return value;
   }
 
-  // BigInt → number (if safe) or string
+  // BigInt → number (if safe) or quoted string for lossless preservation
   if (value is BigInt) {
     // Try to convert to number if within safe integer range
     final minSafe = BigInt.from(-9007199254740991);
@@ -33,7 +33,10 @@ JsonValue normalizeValue(Object? value) {
     if (value >= minSafe && value <= maxSafe) {
       return value.toInt();
     }
-    // Otherwise convert to string (will be unquoted as it looks numeric)
+    // Otherwise convert to string to preserve exact value.
+    // Per TOON spec §2, out-of-range numbers MAY be emitted as quoted strings
+    // to preserve value fidelity. The encoder will quote this string since it
+    // looks numeric (matches isNumericLike pattern), ensuring round-trip safety.
     return value.toString();
   }
 
@@ -75,10 +78,7 @@ JsonValue normalizeValue(Object? value) {
 
 /// Checks if a value is a JSON primitive.
 bool isJsonPrimitive(Object? value) {
-  return value == null ||
-      value is String ||
-      value is num ||
-      value is bool;
+  return value == null || value is String || value is num || value is bool;
 }
 
 /// Checks if a value is a JSON array.

@@ -1,0 +1,54 @@
+{
+  "version": "3.0",
+  "category": "encode",
+  "description": "Tests for encoder options like indent, delimiter, and length markers",
+  "tests": [
+    {
+      "name": "encodes with custom indent size",
+      "input": {
+        "user": {
+          "id": 1,
+          "name": "Ada"
+        }
+      },
+      "expected": "user:\n    id: 1\n    name: Ada",
+      "options": {
+        "indent": 4
+      },
+      "specSection": "12"
+    },
+    {
+      "name": "encodes with tab delimiter",
+      "input": {
+        "tags": ["a", "b", "c"]
+      },
+      "expected": "tags[3\t]: a\tb\tc",
+      "options": {
+        "delimiter": "\t"
+      },
+      "specSection": "11"
+    },
+    {
+      "name": "encodes with pipe delimiter",
+      "input": {
+        "tags": ["a", "b", "c"]
+      },
+      "expected": "tags[3|]: a|b|c",
+      "options": {
+        "delimiter": "|"
+      },
+      "specSection": "11"
+    },
+    {
+      "name": "encodes with length marker enabled",
+      "input": {
+        "tags": ["a", "b"]
+      },
+      "expected": "tags[#2]: a,b",
+      "options": {
+        "lengthMarker": "#"
+      },
+      "specSection": "6"
+    }
+  ]
+}

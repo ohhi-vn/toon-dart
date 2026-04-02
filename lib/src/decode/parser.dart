@@ -3,9 +3,19 @@ import '../utilities/constants.dart';
 import '../utilities/literal-utils.dart';
 import '../utilities/string-utils.dart';
 
+// Pre-compiled regexes for performance
+final _numericLiteralRegex = RegExp(r'^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$');
+final _leadingZeroCheckRegex = RegExp(r'^0\d+$');
+
 // #region Array header parsing
 
 /// Parses an array header line.
+///
+/// Per TOON spec §6: Between the closing bracket `]` of the bracket segment
+/// and the opening brace `{` of a fields segment (or the colon `:` if no fields
+/// segment is present), only whitespace MAY appear. If a decoder encounters
+/// non-whitespace content in these positions, the line MUST NOT be interpreted
+/// as an array header.
 ArrayHeaderParseResult? parseArrayHeaderLine(
   String content,
   String defaultDelimiter,
@@ -45,23 +55,59 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
     return null;
   }
 
-  // Find the colon that comes after all brackets and braces
-  int colonIndex = bracketEnd + 1;
-  int braceEnd = colonIndex;
-
   // Check for fields segment (braces come after bracket)
   final braceStart = content.indexOf(OPEN_BRACE, bracketEnd);
-  if (braceStart != -1 && braceStart < content.indexOf(COLON, bracketEnd)) {
-    final foundBraceEnd = content.indexOf(CLOSE_BRACE, braceStart);
-    if (foundBraceEnd != -1) {
-      braceEnd = foundBraceEnd + 1;
+  int braceEnd = bracketEnd;
+
+  if (braceStart != -1) {
+    // Check if brace comes before any colon
+    final colonAfterBracket = content.indexOf(COLON, bracketEnd);
+    if (colonAfterBracket != -1 && braceStart < colonAfterBracket) {
+      final foundBraceEnd = content.indexOf(CLOSE_BRACE, braceStart);
+      if (foundBraceEnd != -1) {
+        braceEnd = foundBraceEnd + 1;
+      }
+    } else {
+      // Brace is after colon or no colon found - not a valid fields segment
+      // Continue without fields segment
     }
   }
 
-  // Now find colon after brackets and braces
-  colonIndex = content.indexOf(COLON, bracketEnd > braceEnd ? bracketEnd : braceEnd);
+  // Per TOON spec §6: Check for non-whitespace between bracket and brace/colon
+  // Between ] and { (or : if no {), only whitespace is allowed
+
+  // Find the colon position
+  final searchStart =
+      braceStart != -1 && braceStart > bracketEnd ? braceEnd : bracketEnd + 1;
+  final colonIndex = content.indexOf(COLON, searchStart);
+
   if (colonIndex == -1) {
     return null;
+  }
+
+  // Check content between bracket end and colon (excluding fields segment if present)
+  if (braceStart != -1 && braceStart > bracketEnd && braceEnd > braceStart) {
+    // Check between ] and {
+    final betweenBracketAndBrace =
+        content.substring(bracketEnd + 1, braceStart);
+    if (betweenBracketAndBrace.trim().isNotEmpty) {
+      // Non-whitespace between bracket and brace - not a valid header
+      return null;
+    }
+    // Check between } and :
+    final betweenBraceAndColon = content.substring(braceEnd, colonIndex);
+    if (betweenBraceAndColon.trim().isNotEmpty) {
+      // Non-whitespace between brace and colon - not a valid header
+      return null;
+    }
+  } else {
+    // No fields segment - check between ] and :
+    final betweenBracketAndColon =
+        content.substring(bracketEnd + 1, colonIndex);
+    if (betweenBracketAndColon.trim().isNotEmpty) {
+      // Non-whitespace between bracket and colon - not a valid header
+      return null;
+    }
   }
 
   // Extract and parse the key (might be quoted)
@@ -89,13 +135,17 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
 
   // Check for fields segment
   List<String>? fields;
-  if (braceStart != -1 && braceStart < colonIndex) {
+  if (braceStart != -1 && braceStart > bracketEnd && braceEnd > braceStart) {
     final foundBraceEnd = content.indexOf(CLOSE_BRACE, braceStart);
     if (foundBraceEnd != -1 && foundBraceEnd < colonIndex) {
       final fieldsContent = content.substring(braceStart + 1, foundBraceEnd);
       fields = parseDelimitedValues(fieldsContent, delimiter)
           .map((field) => parseStringLiteral(field.trim()))
           .toList();
+
+      // Per TOON spec §6: Validate delimiter consistency between bracket and fields
+      // The delimiter in fields segment must match the bracket delimiter
+      // This is enforced by using the same delimiter for parsing
     }
   }
 
@@ -205,7 +255,9 @@ List<JsonPrimitive> mapRowValuesToPrimitives(List<String> values) {
 // #region Primitive and key parsing
 
 /// Parses a primitive token.
+/// Optimized with pre-compiled regexes and efficient string operations.
 JsonPrimitive parsePrimitiveToken(String token) {
+  // Trim efficiently
   final trimmed = token.trim();
 
   // Empty token
@@ -214,26 +266,54 @@ JsonPrimitive parsePrimitiveToken(String token) {
   }
 
   // Quoted string (if starts with quote, it MUST be properly quoted)
-  if (trimmed.startsWith(DOUBLE_QUOTE)) {
+  if (trimmed.codeUnitAt(0) == 0x22) {
+    // '"'
     return parseStringLiteral(trimmed);
   }
 
-  // Boolean or null literals
-  if (isBooleanOrNullLiteral(trimmed)) {
+  // Boolean or null literals - check first char for quick rejection
+  final firstChar = trimmed.codeUnitAt(0);
+  if (firstChar == 0x74 || firstChar == 0x66 || firstChar == 0x6E) {
+    // 't', 'f', 'n'
     if (trimmed == TRUE_LITERAL) return true;
     if (trimmed == FALSE_LITERAL) return false;
     if (trimmed == NULL_LITERAL) return null;
   }
 
-  // Numeric literal
-  if (isNumericLiteral(trimmed)) {
+  // Numeric literal - optimized check
+  if (_isNumericLiteralFast(trimmed)) {
     final parsedNumber = double.parse(trimmed);
     // Normalize negative zero to positive zero
-    return parsedNumber == -0.0 ? 0 : parsedNumber;
+    return parsedNumber == 0.0 ? 0 : parsedNumber;
   }
 
   // Unquoted string
   return trimmed;
+}
+
+/// Fast numeric literal check with pre-compiled regex
+bool _isNumericLiteralFast(String token) {
+  if (token.isEmpty) return false;
+
+  // Quick check for forbidden leading zeros
+  // Handle both positive (05) and negative (-05) cases
+  int startIndex = 0;
+  if (token.codeUnitAt(0) == 0x2D || token.codeUnitAt(0) == 0x2B) {
+    // '-' or '+'
+    startIndex = 1;
+  }
+
+  if (token.length > startIndex + 1 && token.codeUnitAt(startIndex) == 0x30) {
+    // '0'
+    final secondChar = token.codeUnitAt(startIndex + 1);
+    if (secondChar != 0x2E && secondChar != 0x65 && secondChar != 0x45) {
+      // '.', 'e', 'E'
+      return false;
+    }
+  }
+
+  // Use pre-compiled regex
+  return _numericLiteralRegex.hasMatch(token);
 }
 
 /// Parses a string literal.
@@ -317,8 +397,14 @@ KeyTokenResult parseKeyToken(String content, int start) {
 // #region Array content detection helpers
 
 /// Checks if content is an array header after a hyphen.
+/// Optimized with efficient string operations.
 bool isArrayHeaderAfterHyphen(String content) {
-  return content.trim().startsWith(OPEN_BRACKET) && findUnquotedChar(content, COLON) != -1;
+  final trimmed = content.trim();
+  if (trimmed.isEmpty || trimmed.codeUnitAt(0) != 0x5B) {
+    // '['
+    return false;
+  }
+  return findUnquotedChar(content, COLON) != -1;
 }
 
 /// Checks if content is an object first field after a hyphen.
