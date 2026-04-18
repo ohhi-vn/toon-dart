@@ -172,8 +172,11 @@ class LineWriter {
     }
     _buffer.write(_getIndent(depth));
     _buffer.write(key);
-    _buffer.write(': ');
-    _buffer.write(value);
+    _buffer.write(':');
+    if (value.isNotEmpty) {
+      _buffer.write(' ');
+      _buffer.write(value);
+    }
     _hasContent = true;
   }
 

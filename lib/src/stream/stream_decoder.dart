@@ -745,6 +745,8 @@ class ToonStreamDecoder {
   }
 
   /// Inline primitive parsing — avoids function call overhead.
+  /// Handles escape sequences in quoted strings and checks for
+  /// forbidden leading zeros per TOON spec §4.
   dynamic _parsePrimitiveInline(String token) {
     if (token.isEmpty) return '';
     final first = token.codeUnitAt(0);
@@ -752,7 +754,12 @@ class ToonStreamDecoder {
     // Quoted string
     if (first == 0x22) {
       if (token.length >= 2 && token.codeUnitAt(token.length - 1) == 0x22) {
-        return token.substring(1, token.length - 1);
+        final content = token.substring(1, token.length - 1);
+        // Process escape sequences if present
+        if (content.indexOf('\\') != -1) {
+          return _unescapeInline(content);
+        }
+        return content;
       }
       return token;
     }
@@ -764,7 +771,7 @@ class ToonStreamDecoder {
       if (token == 'null') return null;
     }
 
-    // Numeric
+    // Numeric — _isNumericLikeFast now checks for forbidden leading zeros
     if (_isNumericLikeFast(token)) {
       final parsed = double.tryParse(token);
       if (parsed != null) {
@@ -775,13 +782,86 @@ class ToonStreamDecoder {
     return token;
   }
 
+  /// Fast string unescaping for inline primitive parsing.
+  /// Handles \\, \", \n, \t, \r escape sequences.
+  /// Throws FormatException for invalid escape sequences.
+  String _unescapeInline(String value) {
+    // Fast path: check if any unescaping is needed
+    int backslashPos = value.indexOf('\\');
+    if (backslashPos == -1) return value;
+
+    final result = StringBuffer();
+    int i = 0;
+
+    while (i < value.length) {
+      final c = value.codeUnitAt(i);
+
+      if (c != 0x5C) {
+        // Not a backslash — write directly
+        result.writeCharCode(c);
+        i++;
+        continue;
+      }
+
+      // Backslash found — check next character
+      if (i + 1 >= value.length) {
+        throw FormatException(
+            'Invalid escape sequence: backslash at end of string');
+      }
+
+      final next = value.codeUnitAt(i + 1);
+      switch (next) {
+        case 0x6E: // 'n'
+          result.writeCharCode(0x0A); // newline
+          i += 2;
+          break;
+        case 0x74: // 't'
+          result.writeCharCode(0x09); // tab
+          i += 2;
+          break;
+        case 0x72: // 'r'
+          result.writeCharCode(0x0D); // carriage return
+          i += 2;
+          break;
+        case 0x5C: // '\'
+          result.writeCharCode(0x5C); // backslash
+          i += 2;
+          break;
+        case 0x22: // '"'
+          result.writeCharCode(0x22); // double quote
+          i += 2;
+          break;
+        default:
+          throw FormatException(
+              'Invalid escape sequence: \\${String.fromCharCode(next)}');
+      }
+    }
+
+    return result.toString();
+  }
+
   /// Fast numeric-like check without regex.
+  /// Includes check for forbidden leading zeros per TOON spec §4.
   bool _isNumericLikeFast(String value) {
     if (value.isEmpty) return false;
     int start = 0;
     final first = value.codeUnitAt(0);
-    if (first == 0x2D || first == 0x2B) start = 1;
+    if (first == 0x2D || first == 0x2B) start = 1; // '-' or '+'
     if (start >= value.length) return false;
+
+    // Check for forbidden leading zeros (e.g., "05", "007")
+    // Per TOON spec §4: numbers with leading zeros are treated as strings
+    if (start < value.length && value.codeUnitAt(start) == 0x30) {
+      // '0'
+      if (start + 1 < value.length) {
+        final next = value.codeUnitAt(start + 1);
+        if (next != 0x2E && next != 0x65 && next != 0x45) {
+          // '.', 'e', 'E'
+          return false; // Forbidden leading zero like "05"
+        }
+      }
+    }
+
     bool hasDigit = false;
     bool hasDot = false;
     bool hasE = false;

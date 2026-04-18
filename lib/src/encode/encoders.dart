@@ -123,7 +123,7 @@ void encodeArray(
   if (value.isEmpty) {
     // Optimized: use pushArrayHeader instead of formatHeader + push
     writer.pushArrayHeader(depth,
-        key: key,
+        key: key != null ? encodeKey(key) : null,
         length: 0,
         delimiter: options.delimiter,
         lengthMarker: options.lengthMarker);

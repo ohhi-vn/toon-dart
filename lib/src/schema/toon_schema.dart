@@ -25,6 +25,8 @@
 /// ```
 library toon_schema;
 
+import 'dart:math';
+
 // #region Field Types
 
 /// Field type for schema-aware encoding/decoding.
@@ -639,14 +641,15 @@ String encodeTabularWithSchema(
 
   // Write rows using schema-based encoding (direct field access)
   // Each row is indented at depth+1 (one indent level below the header)
-  for (final row in rows) {
+  // No trailing newline after last row (matches standard encoder behavior)
+  for (int i = 0; i < rows.length; i++) {
+    if (i > 0) buffer.write('\n');
     buffer.write(indentStr);
-    final values = schema.encodeMap(row);
-    for (int i = 0; i < values.length; i++) {
-      if (i > 0) buffer.write(delimiter);
-      buffer.write(_primitiveToString(values[i], delimiter));
+    final values = schema.encodeMap(rows[i]);
+    for (int j = 0; j < values.length; j++) {
+      if (j > 0) buffer.write(delimiter);
+      buffer.write(_primitiveToString(values[j], delimiter));
     }
-    buffer.write('\n');
   }
 
   return buffer.toString();
@@ -682,11 +685,76 @@ List<Map<String, dynamic>> decodeTabularWithSchema(
   return result;
 }
 
+/// Encodes a number in canonical decimal form per TOON spec §2.
+///
+/// Canonical form rules:
+/// - No exponent notation (e.g., 1e6 → 1000000)
+/// - No trailing zeros in fractional part (e.g., 1.5000 → 1.5)
+/// - If fractional part is zero, emit as integer (e.g., 1.0 → 1)
+/// - -0 → 0
+String _encodeNumberCanonical(num value) {
+  // Handle integers directly
+  if (value is int) {
+    return value.toString();
+  }
+
+  // Handle doubles
+  if (value is double) {
+    // Normalize -0 to 0
+    if (value == 0.0) {
+      return '0';
+    }
+
+    // Handle non-finite values
+    if (!value.isFinite) {
+      return 'null';
+    }
+
+    // Check if it's actually an integer value
+    if (value == value.truncateToDouble()) {
+      // It's a whole number - format without decimal point
+      return value.toStringAsFixed(0);
+    }
+
+    // It's a decimal number - need canonical form
+    String str = value.toString();
+
+    if (str.contains('e') || str.contains('E')) {
+      // Convert from scientific notation to decimal
+      final absValue = value.abs();
+      int decimalPlaces;
+
+      if (absValue >= 1) {
+        final intPart = value.truncateToDouble().abs();
+        final intDigits = intPart == 0 ? 1 : (log(intPart) / ln10).floor() + 1;
+        decimalPlaces = (15 - intDigits).clamp(0, 17).toInt();
+      } else {
+        final log10 = (log(value.abs()) / ln10).floor();
+        decimalPlaces = -log10 + 14;
+      }
+
+      str = value.toStringAsFixed(decimalPlaces);
+    }
+
+    // Remove trailing zeros after decimal point
+    if (str.contains('.')) {
+      str = str.replaceAll(RegExp(r'0+$'), '');
+      if (str.endsWith('.')) {
+        str = str.substring(0, str.length - 1);
+      }
+    }
+
+    return str;
+  }
+
+  return value.toString();
+}
+
 /// Fast primitive-to-string conversion (inlined hot path).
 String _primitiveToString(dynamic value, String delimiter) {
   if (value == null) return 'null';
   if (value is bool) return value.toString();
-  if (value is num) return value.toString();
+  if (value is num) return _encodeNumberCanonical(value);
   if (value is String) {
     // Simple quoting check — no regex
     if (_needsQuoting(value, delimiter)) {
@@ -702,8 +770,9 @@ String _primitiveToString(dynamic value, String delimiter) {
 bool _needsQuoting(String value, String delimiter) {
   if (value.isEmpty) return true;
   final first = value.codeUnitAt(0);
-  // Leading whitespace or hyphen
-  if (first <= 0x20 || first == 0x2D) return true;
+  final last = value.codeUnitAt(value.length - 1);
+  // Leading/trailing whitespace or hyphen at start
+  if (first <= 0x20 || last <= 0x20 || first == 0x2D) return true;
   // Check for special characters
   for (int i = 0; i < value.length; i++) {
     final c = value.codeUnitAt(i);
@@ -730,12 +799,27 @@ bool _needsQuoting(String value, String delimiter) {
 }
 
 /// Fast numeric-like check without regex.
+/// Includes check for forbidden leading zeros per TOON spec §4.
 bool _isNumericLikeFast(String value) {
   if (value.isEmpty) return false;
   int start = 0;
   final first = value.codeUnitAt(0);
   if (first == 0x2D || first == 0x2B) start = 1; // '-' or '+'
   if (start >= value.length) return false;
+
+  // Check for forbidden leading zeros (e.g., "05", "007")
+  // Per TOON spec §4: numbers with leading zeros are treated as strings
+  if (start < value.length && value.codeUnitAt(start) == 0x30) {
+    // '0'
+    if (start + 1 < value.length) {
+      final next = value.codeUnitAt(start + 1);
+      if (next != 0x2E && next != 0x65 && next != 0x45) {
+        // '.', 'e', 'E'
+        return false; // Forbidden leading zero like "05"
+      }
+    }
+  }
+
   bool hasDigit = false;
   bool hasDot = false;
   bool hasE = false;
@@ -818,8 +902,68 @@ List<String> _parseDelimitedFast(String input, String delimiter) {
   return values;
 }
 
+/// Fast string unescaping without regex.
+/// Handles \\, \", \n, \t, \r escape sequences.
+/// Throws FormatException for invalid escape sequences.
+String _unescapeFast(String value) {
+  // Fast path: check if any unescaping is needed
+  int backslashPos = value.indexOf('\\');
+  if (backslashPos == -1) return value;
+
+  final result = StringBuffer();
+  int i = 0;
+
+  while (i < value.length) {
+    final c = value.codeUnitAt(i);
+
+    if (c != 0x5C) {
+      // Not a backslash — write directly
+      result.writeCharCode(c);
+      i++;
+      continue;
+    }
+
+    // Backslash found — check next character
+    if (i + 1 >= value.length) {
+      throw FormatException(
+          'Invalid escape sequence: backslash at end of string');
+    }
+
+    final next = value.codeUnitAt(i + 1);
+    switch (next) {
+      case 0x6E: // 'n'
+        result.writeCharCode(0x0A); // newline
+        i += 2;
+        break;
+      case 0x74: // 't'
+        result.writeCharCode(0x09); // tab
+        i += 2;
+        break;
+      case 0x72: // 'r'
+        result.writeCharCode(0x0D); // carriage return
+        i += 2;
+        break;
+      case 0x5C: // '\'
+        result.writeCharCode(0x5C); // backslash
+        i += 2;
+        break;
+      case 0x22: // '"'
+        result.writeCharCode(0x22); // double quote
+        i += 2;
+        break;
+      default:
+        throw FormatException(
+            'Invalid escape sequence: \\${String.fromCharCode(next)}');
+    }
+  }
+
+  return result.toString();
+}
+
 /// Fast primitive parsing without regex.
 /// Uses direct character inspection for type detection.
+/// Handles escape sequences in quoted strings and checks for
+/// forbidden leading zeros per TOON spec §4.
 dynamic _parsePrimitiveFast(String token) {
   if (token.isEmpty) return '';
   final first = token.codeUnitAt(0);
@@ -828,7 +972,12 @@ dynamic _parsePrimitiveFast(String token) {
   if (first == 0x22) {
     // Find closing quote
     if (token.length >= 2 && token.codeUnitAt(token.length - 1) == 0x22) {
-      return token.substring(1, token.length - 1);
+      final content = token.substring(1, token.length - 1);
+      // Process escape sequences if present
+      if (content.indexOf('\\') != -1) {
+        return _unescapeFast(content);
+      }
+      return content;
     }
     return token;
   }
@@ -840,7 +989,7 @@ dynamic _parsePrimitiveFast(String token) {
     if (token == 'null') return null;
   }
 
-  // Numeric
+  // Numeric — _isNumericLikeFast now checks for forbidden leading zeros
   if (_isNumericLikeFast(token)) {
     final parsed = double.tryParse(token);
     if (parsed != null) {

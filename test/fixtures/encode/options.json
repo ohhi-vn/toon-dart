@@ -1,1 +1,180 @@
-404: Not Found
+{
+  "version": "1.4",
+  "category": "encode",
+  "description": "Encoding options - length marker, indent size, and combined options",
+  "tests": [
+    {
+      "name": "encodes primitive array with length marker",
+      "input": {
+        "items": [1, 2, 3]
+      },
+      "expected": "items[#3]: 1,2,3",
+      "options": {
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes empty array with length marker",
+      "input": {
+        "items": []
+      },
+      "expected": "items[#0]:",
+      "options": {
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes tabular array with length marker",
+      "input": {
+        "items": [{ "id": 1 }, { "id": 2 }]
+      },
+      "expected": "items[#2]{id}:\n  1\n  2",
+      "options": {
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes nested array of arrays with length marker",
+      "input": {
+        "items": [
+          ["a", "b"],
+          ["c", "d"]
+        ]
+      },
+      "expected": "items[#2]:\n  - [#2]: a,b\n  - [#2]: c,d",
+      "options": {
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes root-level array with length marker",
+      "input": ["x", "y", "z"],
+      "expected": "[#3]: x,y,z",
+      "options": {
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes root-level empty array with length marker",
+      "input": [],
+      "expected": "[#0]:",
+      "options": {
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes nested object with custom indent size",
+      "input": {
+        "user": {
+          "name": "Ada",
+          "role": "admin"
+        }
+      },
+      "expected": "user:\n    name: Ada\n    role: admin",
+      "options": {
+        "indent": 4
+      },
+      "specSection": "12"
+    },
+    {
+      "name": "encodes deeply nested object with custom indent size",
+      "input": {
+        "a": {
+          "b": {
+            "c": 1
+          }
+        }
+      },
+      "expected": "a:\n    b:\n        c: 1",
+      "options": {
+        "indent": 4
+      },
+      "specSection": "12"
+    },
+    {
+      "name": "encodes primitive array with pipe delimiter and length marker",
+      "input": {
+        "items": [1, 2, 3]
+      },
+      "expected": "items[#3|]: 1|2|3",
+      "options": {
+        "delimiter": "|",
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes tabular array with pipe delimiter and length marker",
+      "input": {
+        "items": [{ "id": 1 }, { "id": 2 }]
+      },
+      "expected": "items[#2|]{id}:\n  1\n  2",
+      "options": {
+        "delimiter": "|",
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes nested object with tab delimiter and length marker",
+      "input": {
+        "items": ["a", "b"],
+        "count": 2
+      },
+      "expected": "items[#2\t]: a\tb\ncount: 2",
+      "options": {
+        "delimiter": "\t",
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes with all options combined",
+      "input": {
+        "items": [1, 2, 3]
+      },
+      "expected": "items[#3|]: 1|2|3",
+      "options": {
+        "indent": 4,
+        "delimiter": "|",
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    },
+    {
+      "name": "encodes nested object with tabular array and custom indent",
+      "input": {
+        "users": [
+          { "name": "Ada", "role": "admin" },
+          { "name": "Bob", "role": "user" }
+        ]
+      },
+      "expected": "users[2]{name,role}:\n    Ada,admin\n    Bob,user",
+      "options": {
+        "indent": 4
+      },
+      "specSection": "12"
+    },
+    {
+      "name": "encodes nested object with tabular array, length marker, and custom indent",
+      "input": {
+        "users": [
+          { "name": "Ada", "role": "admin" },
+          { "name": "Bob", "role": "user" }
+        ]
+      },
+      "expected": "users[#2]{name,role}:\n    Ada,admin\n    Bob,user",
+      "options": {
+        "indent": 4,
+        "lengthMarker": "#"
+      },
+      "specSection": "9"
+    }
+  ]
+}
