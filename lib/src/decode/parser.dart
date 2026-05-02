@@ -43,7 +43,7 @@ import '../utilities/string-utils.dart';
 /// - Trailing dot: `3.`
 /// - Trailing e: `3e`
 @pragma('vm:prefer-inline')
-bool _isNumericLiteralFast(String token) {
+bool isNumericLiteralFast(String token) {
   if (token.isEmpty) return false;
 
   int i = 0;
@@ -563,7 +563,7 @@ JsonPrimitive parsePrimitiveToken(String token) {
   }
 
   // Numeric literal — use state machine instead of regex
-  if (_isNumericLiteralFast(trimmed)) {
+  if (isNumericLiteralFast(trimmed)) {
     final parsedNumber = double.parse(trimmed);
     // Normalize negative zero to positive zero
     return parsedNumber == 0.0 ? 0 : parsedNumber;
@@ -888,7 +888,7 @@ dynamic _parsePrimitiveInline(String token) {
   }
 
   // Numeric
-  if (_isNumericLiteralFast(token)) {
+  if (isNumericLiteralFast(token)) {
     final parsed = double.tryParse(token);
     if (parsed != null) {
       return parsed == 0.0 ? 0 : parsed;

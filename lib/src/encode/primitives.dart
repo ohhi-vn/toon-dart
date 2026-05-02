@@ -7,6 +7,7 @@ import '../utilities/string-utils.dart';
 // #region Primitive encoding
 
 /// Encodes a primitive value to a string.
+@pragma('vm:prefer-inline')
 String encodePrimitive(JsonPrimitive value, [String? delimiter]) {
   if (value == null) {
     return NULL_LITERAL;
@@ -81,12 +82,20 @@ String _encodeNumber(num value) {
       str = value.toStringAsFixed(decimalPlaces);
     }
 
-    // Remove trailing zeros after decimal point
+    // Remove trailing zeros after decimal point (code unit approach, no regex)
     if (str.contains('.')) {
-      str = str.replaceAll(RegExp(r'0+$'), '');
-      // Remove trailing decimal point if no fractional part remains
-      if (str.endsWith('.')) {
-        str = str.substring(0, str.length - 1);
+      // Find the last non-zero digit after decimal point
+      int end = str.length - 1;
+      while (end >= 0 && str.codeUnitAt(end) == 0x30) {
+        // '0'
+        end--;
+      }
+      // Remove trailing zeros
+      if (end >= 0 && str.codeUnitAt(end) == 0x2E) {
+        // '.' - no fractional part
+        str = str.substring(0, end); // Remove decimal point
+      } else if (end < str.length - 1) {
+        str = str.substring(0, end + 1);
       }
     }
 
@@ -98,6 +107,7 @@ String _encodeNumber(num value) {
 }
 
 /// Encodes a string literal, adding quotes if necessary.
+@pragma('vm:prefer-inline')
 String encodeStringLiteral(String value, [String delimiter = COMMA]) {
   if (isSafeUnquoted(value, delimiter)) {
     return value;
@@ -111,6 +121,7 @@ String encodeStringLiteral(String value, [String delimiter = COMMA]) {
 // #region Key encoding
 
 /// Encodes a key, adding quotes if necessary.
+@pragma('vm:prefer-inline')
 String encodeKey(String key) {
   if (isValidUnquotedKey(key)) {
     return key;
@@ -144,6 +155,8 @@ String encodeAndJoinPrimitives(List<JsonPrimitive> values,
 // #region Header formatters
 
 /// Formats an array header.
+///
+/// Optimized: uses StringBuffer to avoid intermediate string concatenations.
 String formatHeader(
   int length, {
   String? key,
@@ -154,26 +167,33 @@ String formatHeader(
   final delimiterValue = delimiter ?? COMMA;
   final lengthMarkerValue = lengthMarker ?? '';
 
-  String header = '';
+  final buffer = StringBuffer();
 
   if (key != null) {
-    header += encodeKey(key);
+    buffer.write(encodeKey(key));
   }
 
   // Only include delimiter if it's not the default (comma)
   final delimiterSuffix =
       delimiterValue != DEFAULT_DELIMITER ? delimiterValue : '';
-  header += '[$lengthMarkerValue$length$delimiterSuffix]';
+  buffer.write('[');
+  buffer.write(lengthMarkerValue);
+  buffer.write(length);
+  buffer.write(delimiterSuffix);
+  buffer.write(']');
 
   if (fields != null) {
-    final quotedFields = fields.map((f) => encodeKey(f)).toList();
-    final joinedFields = quotedFields.join(delimiterValue);
-    header += '{$joinedFields}';
+    buffer.write('{');
+    for (int i = 0; i < fields.length; i++) {
+      if (i > 0) buffer.write(delimiterValue);
+      buffer.write(encodeKey(fields[i]));
+    }
+    buffer.write('}');
   }
 
-  header += ':';
+  buffer.write(':');
 
-  return header;
+  return buffer.toString();
 }
 
 // #endregion

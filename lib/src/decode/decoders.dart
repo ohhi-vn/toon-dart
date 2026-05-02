@@ -122,9 +122,9 @@ bool isKeyValueLine(ParsedLine line) {
     final closingQuoteIndex = findClosingQuote(keyPart, 0);
     return closingQuoteIndex != -1 && closingQuoteIndex == keyPart.length - 1;
   } else {
-    // Unquoted key - must match identifier pattern
+    // Unquoted key - use optimized validation (no regex)
     // Per TOON spec §7.3: ^[A-Za-z_][A-Za-z0-9_.]*$
-    return RegExp(r'^[A-Za-z_][A-Za-z0-9_.]*$').hasMatch(keyPart);
+    return isValidUnquotedKey(keyPart);
   }
 }
 

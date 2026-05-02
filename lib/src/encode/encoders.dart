@@ -368,6 +368,10 @@ bool isTabularArray(
 /// Optimized: uses pre-encoded row strings and batch writing.
 /// This is a fallback for cases where rows are written individually
 /// (e.g., when called from list-item encoding).
+///
+/// Optimized: pre-builds all row strings and uses batch [LineWriter.pushTabularRows]
+/// instead of calling push() in a loop. This avoids per-row method call overhead
+/// and allows the writer to optimize the batch write.
 void writeTabularRows(
   List<JsonObject> rows,
   List<String> header,
@@ -378,19 +382,23 @@ void writeTabularRows(
   final delimiter = options.delimiter;
   final headerLength = header.length;
 
-  // Reuse a single buffer for all rows
-  final buffer = StringBuffer();
+  // Pre-allocate row strings list for batch writing
+  final rowStrings = List<String?>.filled(rows.length, null);
 
-  for (final row in rows) {
-    buffer.clear();
+  for (int r = 0; r < rows.length; r++) {
+    final row = rows[r];
+    final buffer = StringBuffer();
     for (int i = 0; i < headerLength; i++) {
       if (i > 0) {
         buffer.write(delimiter);
       }
       buffer.write(encodePrimitive(row[header[i]], delimiter));
     }
-    writer.push(depth, buffer.toString());
+    rowStrings[r] = buffer.toString();
   }
+
+  // Use batch write for better performance
+  writer.pushTabularRows(depth, rowStrings as List<String>);
 }
 
 // #endregion
