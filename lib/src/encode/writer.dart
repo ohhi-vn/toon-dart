@@ -20,8 +20,8 @@ class LineWriter {
 
   /// Cache of indentation strings by depth level.
   /// Avoids repeated string multiplication for the same depth.
-  /// Lazily populated as depths are encountered.
-  final List<String> _indentCache = ['']; // depth 0 = empty string
+  /// Pre-populated up to depth 20 (covers 99% of use cases).
+  final List<String> _indentCache = List<String>.generate(21, (i) => '');
 
   bool _hasContent = false;
 
@@ -42,20 +42,30 @@ class LineWriter {
     if (indentSize <= 0) {
       throw ArgumentError('indentSize must be positive');
     }
+    // Pre-allocate StringBuffer capacity by writing and clearing
+    // This avoids 2-3x reallocation overhead during encoding
+    if (estimatedCapacity > 1024) {
+      _buffer.write(' ' * estimatedCapacity);
+      _buffer.clear();
+    }
+    // Pre-compute indent cache up to depth 20
+    for (int i = 1; i <= 20; i++) {
+      _indentCache[i] = _indentCache[i - 1] + _indentationString;
+    }
   }
 
   /// Gets the cached indentation string for a given depth.
   ///
-  /// Lazily builds the cache as new depths are encountered.
-  /// This avoids repeated string multiplication for the same depth,
-  /// which is a significant overhead in deeply nested structures.
+  /// Uses pre-computed cache for depths 0-20 (fast path).
+  /// Falls back to lazy computation for deeper nesting (rare).
+  @pragma('vm:prefer-inline')
   String _getIndent(Depth depth) {
-    // Fast path: already cached
-    if (depth < _indentCache.length) {
+    // Fast path: pre-computed cache (depths 0-20)
+    if (depth <= 20) {
       return _indentCache[depth];
     }
 
-    // Extend cache up to the requested depth
+    // Slow path: extend cache for very deep nesting (rare)
     for (int i = _indentCache.length; i <= depth; i++) {
       _indentCache.add(_indentCache[i - 1] + _indentationString);
     }

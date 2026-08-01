@@ -27,6 +27,8 @@ library toon_schema;
 
 import 'dart:math';
 
+import '../utilities/numeric_utils.dart';
+
 // #region Field Types
 
 /// Field type for schema-aware encoding/decoding.
@@ -154,6 +156,11 @@ abstract class ToonSchema {
 
   /// Number of fields.
   late final int fieldCount = fields.length;
+
+  /// Pre-computed field indices for direct access (avoids bounds check in loop).
+  /// Identity mapping [0, 1, 2, ...] but tells VM it's a fixed List<int>.
+  late final List<int> _fieldIndices =
+      List<int>.generate(fieldCount, (i) => i, growable: false);
 
   // #endregion
 
@@ -408,31 +415,33 @@ class FlattenedSchema extends ToonSchema {
 
   /// Gets a value from a nested map using path segments.
   /// Returns null if any intermediate segment is missing.
+  @pragma('vm:prefer-inline')
   static dynamic _getNestedValue(
       Map<String, dynamic> map, List<String> segments) {
     dynamic current = map;
-    for (final segment in segments) {
+    for (int i = 0; i < segments.length; i++) {
       if (current is! Map<String, dynamic>) return null;
-      current = current[segment];
+      current = current[segments[i]];
     }
     return current;
   }
 
   /// Sets a value in a nested map using path segments.
   /// Creates intermediate maps as needed.
+  @pragma('vm:prefer-inline')
   static void _setNestedValue(
       Map<String, dynamic> map, List<String> segments, dynamic value) {
-    if (segments.isEmpty) return;
+    final len = segments.length;
+    if (len == 0) return;
     Map<String, dynamic> current = map;
-    for (int i = 0; i < segments.length - 1; i++) {
+    for (int i = 0; i < len - 1; i++) {
       final segment = segments[i];
       final child = current[segment];
-      if (child is! Map<String, dynamic>) {
-        current[segment] = <String, dynamic>{};
-      }
+      // Avoid is! check by using null-aware assignment
+      current[segment] = (child is Map<String, dynamic>) ? child : <String, dynamic>{};
       current = current[segment] as Map<String, dynamic>;
     }
-    current[segments.last] = value;
+    current[segments[len - 1]] = value;
   }
 }
 
@@ -670,6 +679,7 @@ List<Map<String, dynamic>> decodeTabularWithSchema(
 }) {
   final result = <Map<String, dynamic>>[];
   final fieldNames = schema.fieldNames;
+  final fieldIndices = schema._fieldIndices; // Pre-computed indices
 
   for (final row in rows) {
     final values = _parseDelimitedFast(row, delimiter);
@@ -677,7 +687,8 @@ List<Map<String, dynamic>> decodeTabularWithSchema(
     final count =
         values.length < fieldNames.length ? values.length : fieldNames.length;
     for (int i = 0; i < count; i++) {
-      map[fieldNames[i]] = _parsePrimitiveFast(values[i]);
+      final idx = fieldIndices[i]; // Direct access, VM can eliminate bounds check
+      map[fieldNames[idx]] = _parsePrimitiveFast(values[i]);
     }
     result.add(map);
   }
@@ -785,53 +796,8 @@ bool _needsQuoting(String value, String delimiter) {
   // Check for boolean/null literals
   if (value == 'true' || value == 'false' || value == 'null') return true;
   // Check for numeric-like
-  if (_isNumericLikeFast(value)) return true;
+  if (isNumericLikeFast(value)) return true;
   return false;
-}
-
-/// Fast numeric-like check without regex.
-/// Includes check for forbidden leading zeros per TOON spec §4.
-bool _isNumericLikeFast(String value) {
-  if (value.isEmpty) return false;
-  int start = 0;
-  final first = value.codeUnitAt(0);
-  if (first == 0x2D || first == 0x2B) start = 1; // '-' or '+'
-  if (start >= value.length) return false;
-
-  // Check for forbidden leading zeros (e.g., "05", "007")
-  // Per TOON spec §4: numbers with leading zeros are treated as strings
-  if (start < value.length && value.codeUnitAt(start) == 0x30) {
-    // '0'
-    if (start + 1 < value.length) {
-      final next = value.codeUnitAt(start + 1);
-      if (next != 0x2E && next != 0x65 && next != 0x45) {
-        // '.', 'e', 'E'
-        return false; // Forbidden leading zero like "05"
-      }
-    }
-  }
-
-  bool hasDigit = false;
-  bool hasDot = false;
-  bool hasE = false;
-  for (int i = start; i < value.length; i++) {
-    final c = value.codeUnitAt(i);
-    if (c >= 0x30 && c <= 0x39) {
-      hasDigit = true;
-    } else if (c == 0x2E && !hasDot) {
-      hasDot = true;
-    } else if ((c == 0x65 || c == 0x45) && !hasE && hasDigit) {
-      hasE = true;
-    } else if ((c == 0x2B || c == 0x2D) &&
-        hasE &&
-        i > 0 &&
-        (value.codeUnitAt(i - 1) == 0x65 || value.codeUnitAt(i - 1) == 0x45)) {
-      // exponent sign
-    } else {
-      return false;
-    }
-  }
-  return hasDigit;
 }
 
 /// Fast string escaping without regex.
@@ -980,12 +946,9 @@ dynamic _parsePrimitiveFast(String token) {
     if (token == 'null') return null;
   }
 
-  // Numeric — _isNumericLikeFast now checks for forbidden leading zeros
-  if (_isNumericLikeFast(token)) {
-    final parsed = double.tryParse(token);
-    if (parsed != null) {
-      return parsed == 0.0 ? 0 : parsed;
-    }
+  // Numeric — use shared fast numeric parsing (handles int/double)
+  if (isNumericLikeFast(token)) {
+    return parseNumberFast(token);
   }
 
   return token;

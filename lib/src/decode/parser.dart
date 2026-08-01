@@ -19,6 +19,7 @@ library parser;
 import '../types.dart';
 import '../utilities/constants.dart';
 import '../utilities/string-utils.dart';
+import '../utilities/numeric_utils.dart';
 
 // #region Fast Numeric Literal Detection (No Regex)
 
@@ -756,11 +757,9 @@ JsonPrimitive parsePrimitiveToken(String token) {
     }
   }
 
-  // Numeric literal — use state machine instead of regex
+  // Numeric literal — use shared fast numeric parsing (handles int/double)
   if (isNumericLiteralFast(trimmed)) {
-    final parsedNumber = double.parse(trimmed);
-    // Normalize negative zero to positive zero
-    return parsedNumber == 0.0 ? 0 : parsedNumber;
+    return parseNumberFast(trimmed);
   }
 
   // Unquoted string
@@ -1083,10 +1082,7 @@ dynamic _parsePrimitiveInline(String token) {
 
   // Numeric
   if (isNumericLiteralFast(token)) {
-    final parsed = double.tryParse(token);
-    if (parsed != null) {
-      return parsed == 0.0 ? 0 : parsed;
-    }
+    return parseNumberFast(token);
   }
 
   return token;
@@ -1113,111 +1109,82 @@ List<Map<String, dynamic>> parseDelimitedRowsBatch(
   String delimiter,
   List<String> fieldNames,
 ) {
-  final result = <Map<String, dynamic>>[];
+  final result = List<Map<String, dynamic>>.generate(
+    rows.length,
+    (_) => <String, dynamic>{},
+    growable: false,
+  );
   final fieldCount = fieldNames.length;
   final delimCode = delimiter.length == 1 ? delimiter.codeUnitAt(0) : -1;
+  final delimLen = delimiter.length;
 
   // Reuse buffers across rows
   final current = StringBuffer();
 
-  for (final content in rows) {
-    final map = <String, dynamic>{};
+  for (int rowIdx = 0; rowIdx < rows.length; rowIdx++) {
+    final content = rows[rowIdx];
+    final map = result[rowIdx];
     int fieldIndex = 0;
     current.clear();
     bool inQuotes = false;
     int i = 0;
     final len = content.length;
+    final isSingleChar = delimCode != -1;
 
-    if (delimCode != -1) {
-      // Fast path: single-character delimiter
-      while (i < len && fieldIndex < fieldCount) {
-        final c = content.codeUnitAt(i);
+    while (i < len && fieldIndex < fieldCount) {
+      final c = content.codeUnitAt(i);
 
-        if (c == 0x5C && inQuotes && i + 1 < len) {
-          current.writeCharCode(c);
-          current.writeCharCode(content.codeUnitAt(i + 1));
-          i += 2;
-          continue;
-        }
+      // Escape handling (same for both paths)
+      if (c == 0x5C && inQuotes && i + 1 < len) {
+        current.writeCharCode(c);
+        current.writeCharCode(content.codeUnitAt(i + 1));
+        i += 2;
+        continue;
+      }
 
-        if (c == 0x22) {
-          inQuotes = !inQuotes;
-          current.writeCharCode(c);
-          i++;
-          continue;
-        }
-
-        if (c == delimCode && !inQuotes) {
-          map[fieldNames[fieldIndex]] =
-              _parsePrimitiveInline(current.toString().trim());
-          current.clear();
-          fieldIndex++;
-          i++;
-          continue;
-        }
-
+      if (c == 0x22) {
+        inQuotes = !inQuotes;
         current.writeCharCode(c);
         i++;
+        continue;
       }
 
-      // Last value
-      if (fieldIndex < fieldCount) {
-        final last = current.toString().trim();
-        if (last.isNotEmpty || fieldIndex > 0) {
-          map[fieldNames[fieldIndex]] = _parsePrimitiveInline(last);
-        }
-      }
-    } else {
-      // Slow path: multi-character delimiter
-      while (i < len && fieldIndex < fieldCount) {
-        final c = content.codeUnitAt(i);
-
-        if (c == 0x5C && inQuotes && i + 1 < len) {
-          current.writeCharCode(c);
-          current.writeCharCode(content.codeUnitAt(i + 1));
-          i += 2;
-          continue;
-        }
-
-        if (c == 0x22) {
-          inQuotes = !inQuotes;
-          current.writeCharCode(c);
-          i++;
-          continue;
-        }
-
-        if (!inQuotes && i + delimiter.length <= len) {
-          bool isDelim = true;
-          for (int d = 0; d < delimiter.length; d++) {
+      // Unified delimiter check
+      bool isDelim = false;
+      if (!inQuotes) {
+        if (isSingleChar) {
+          isDelim = c == delimCode;
+        } else if (i + delimLen <= len) {
+          isDelim = true;
+          for (int d = 0; d < delimLen; d++) {
             if (content.codeUnitAt(i + d) != delimiter.codeUnitAt(d)) {
               isDelim = false;
               break;
             }
           }
-          if (isDelim) {
-            map[fieldNames[fieldIndex]] =
-                _parsePrimitiveInline(current.toString().trim());
-            current.clear();
-            fieldIndex++;
-            i += delimiter.length;
-            continue;
-          }
-        }
-
-        current.writeCharCode(c);
-        i++;
-      }
-
-      // Last value
-      if (fieldIndex < fieldCount) {
-        final last = current.toString().trim();
-        if (last.isNotEmpty || fieldIndex > 0) {
-          map[fieldNames[fieldIndex]] = _parsePrimitiveInline(last);
         }
       }
+
+      if (isDelim) {
+        map[fieldNames[fieldIndex]] =
+            _parsePrimitiveInline(current.toString().trim());
+        current.clear();
+        fieldIndex++;
+        i += isSingleChar ? 1 : delimLen;
+        continue;
+      }
+
+      current.writeCharCode(c);
+      i++;
     }
 
-    result.add(map);
+    // Last value
+    if (fieldIndex < fieldCount) {
+      final last = current.toString().trim();
+      if (last.isNotEmpty || fieldIndex > 0) {
+        map[fieldNames[fieldIndex]] = _parsePrimitiveInline(last);
+      }
+    }
   }
 
   return result;

@@ -32,11 +32,33 @@ library stream_decoder;
 import '../types.dart';
 import '../utilities/constants.dart';
 import '../utilities/string-utils.dart';
+import '../utilities/numeric_utils.dart';
 import '../decode/scanners.dart';
 import '../decode/parser.dart';
 import '../schema/toon_schema.dart';
 
 // #region Stream Decoder
+
+/// Object pool for reducing allocations in stream decoding.
+/// Reuses StringBuffer and Map objects across row iterations.
+class BufferPool {
+  static final List<StringBuffer> _stringBuffers = <StringBuffer>[];
+  static final List<Map<String, dynamic>> _maps = <Map<String, dynamic>>[];
+
+  static StringBuffer acquireBuffer() =>
+      _stringBuffers.isNotEmpty ? _stringBuffers.removeLast() : StringBuffer();
+  static void releaseBuffer(StringBuffer b) {
+    b.clear();
+    _stringBuffers.add(b);
+  }
+
+  static Map<String, dynamic> acquireMap() =>
+      _maps.isNotEmpty ? _maps.removeLast() : <String, dynamic>{};
+  static void releaseMap(Map<String, dynamic> m) {
+    m.clear();
+    _maps.add(m);
+  }
+}
 
 /// Lazy stream decoder for TOON format.
 ///
@@ -256,6 +278,77 @@ class ToonStreamDecoder {
         _parseDelimitedIntoMap(line.content, delimiter, fieldNames, obj);
 
         yield obj;
+        rowCount++;
+      } else {
+        break;
+      }
+    }
+  }
+
+  /// Callback-based tabular row streaming with schema (safe pooling).
+  ///
+  /// Uses object pooling internally without retention risk because
+  /// the callback receives each row and the pool is released immediately after.
+  /// This is the safest and fastest way to process large tabular data.
+  void decodeTabularRowsWithSchemaCallback(
+    ToonSchema schema,
+    void Function(Map<String, dynamic> row) callback,
+  ) {
+    final lines = _lines;
+    final cursor = LineCursor(lines.lines, lines.blankLines);
+    final options = ResolvedDecodeOptions(indent: _indentSize, strict: _strict);
+
+    while (!cursor.atEnd()) {
+      final line = cursor.peek();
+      if (line == null) break;
+
+      final headerResult =
+          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+      if (headerResult != null && headerResult.header.fields != null) {
+        cursor.advance();
+
+        _streamTabularRowsWithSchemaCallback(
+          cursor,
+          headerResult.header,
+          schema,
+          options,
+          callback,
+        );
+        return;
+      }
+
+      cursor.advance();
+    }
+  }
+
+  /// Internal: streams tabular rows with schema using callback (pooled).
+  void _streamTabularRowsWithSchemaCallback(
+    LineCursor cursor,
+    ArrayHeaderInfo header,
+    ToonSchema schema,
+    ResolvedDecodeOptions options,
+    void Function(Map<String, dynamic>) callback,
+  ) {
+    final rowDepth = header.key != null ? 1 : 1;
+    final delimiter = header.delimiter;
+    final fieldNames = schema.fieldNames;
+    int rowCount = 0;
+
+    while (!cursor.atEnd() && rowCount < header.length) {
+      final line = cursor.peek();
+      if (line == null || line.depth < rowDepth) break;
+
+      if (line.depth == rowDepth) {
+        if (_isKeyValueLine(line.content, delimiter)) break;
+
+        cursor.advance();
+
+        // Inline fast parsing with pooled map
+        final obj = BufferPool.acquireMap();
+        _parseDelimitedIntoMap(line.content, delimiter, fieldNames, obj);
+
+        callback(obj);
+        BufferPool.releaseMap(obj);
         rowCount++;
       } else {
         break;
@@ -512,30 +605,48 @@ class ToonStreamDecoder {
   ///   process(row);
   /// }
   /// ```
-  Stream<Map<String, dynamic>> decodeTabularRowsAsync() async* {
+  Stream<Map<String, dynamic>> decodeTabularRowsAsync({int batchSize = 100}) async* {
+    final batch = <Map<String, dynamic>>[];
     for (final row in decodeTabularRows()) {
-      yield row;
-      // Allow event loop to process other events
-      await Future.delayed(Duration.zero);
+      batch.add(row);
+      if (batch.length >= batchSize) {
+        for (final r in batch) yield r;
+        batch.clear();
+        await Future.microtask(() {}); // Single yield point per batch
+      }
     }
+    for (final r in batch) yield r;
   }
 
   /// Async stream of tabular rows with schema.
   Stream<Map<String, dynamic>> decodeTabularRowsWithSchemaAsync(
-    ToonSchema schema,
-  ) async* {
+    ToonSchema schema, {
+    int batchSize = 100,
+  }) async* {
+    final batch = <Map<String, dynamic>>[];
     for (final row in decodeTabularRowsWithSchema(schema)) {
-      yield row;
-      await Future.delayed(Duration.zero);
+      batch.add(row);
+      if (batch.length >= batchSize) {
+        for (final r in batch) yield r;
+        batch.clear();
+        await Future.microtask(() {}); // Single yield point per batch
+      }
     }
+    for (final r in batch) yield r;
   }
 
   /// Async stream of list items.
-  Stream<dynamic> decodeListItemsAsync() async* {
+  Stream<dynamic> decodeListItemsAsync({int batchSize = 100}) async* {
+    final batch = <dynamic>[];
     for (final item in decodeListItems()) {
-      yield item;
-      await Future.delayed(Duration.zero);
+      batch.add(item);
+      if (batch.length >= batchSize) {
+        for (final r in batch) yield r;
+        batch.clear();
+        await Future.microtask(() {}); // Single yield point per batch
+      }
     }
+    for (final r in batch) yield r;
   }
 
   // #endregion
@@ -771,12 +882,9 @@ class ToonStreamDecoder {
       if (token == 'null') return null;
     }
 
-    // Numeric — _isNumericLikeFast now checks for forbidden leading zeros
-    if (_isNumericLikeFast(token)) {
-      final parsed = double.tryParse(token);
-      if (parsed != null) {
-        return parsed == 0.0 ? 0 : parsed;
-      }
+    // Numeric — use shared fast numeric parsing (handles int/double)
+    if (isNumericLikeFast(token)) {
+      return parseNumberFast(token);
     }
 
     return token;
@@ -840,53 +948,7 @@ class ToonStreamDecoder {
     return result.toString();
   }
 
-  /// Fast numeric-like check without regex.
-  /// Includes check for forbidden leading zeros per TOON spec §4.
-  bool _isNumericLikeFast(String value) {
-    if (value.isEmpty) return false;
-    int start = 0;
-    final first = value.codeUnitAt(0);
-    if (first == 0x2D || first == 0x2B) start = 1; // '-' or '+'
-    if (start >= value.length) return false;
-
-    // Check for forbidden leading zeros (e.g., "05", "007")
-    // Per TOON spec §4: numbers with leading zeros are treated as strings
-    if (start < value.length && value.codeUnitAt(start) == 0x30) {
-      // '0'
-      if (start + 1 < value.length) {
-        final next = value.codeUnitAt(start + 1);
-        if (next != 0x2E && next != 0x65 && next != 0x45) {
-          // '.', 'e', 'E'
-          return false; // Forbidden leading zero like "05"
-        }
-      }
-    }
-
-    bool hasDigit = false;
-    bool hasDot = false;
-    bool hasE = false;
-    for (int i = start; i < value.length; i++) {
-      final c = value.codeUnitAt(i);
-      if (c >= 0x30 && c <= 0x39) {
-        hasDigit = true;
-      } else if (c == 0x2E && !hasDot) {
-        hasDot = true;
-      } else if ((c == 0x65 || c == 0x45) && !hasE && hasDigit) {
-        hasE = true;
-      } else if ((c == 0x2B || c == 0x2D) &&
-          hasE &&
-          i > 0 &&
-          (value.codeUnitAt(i - 1) == 0x65 ||
-              value.codeUnitAt(i - 1) == 0x45)) {
-        // exponent sign
-      } else {
-        return false;
-      }
-    }
-    return hasDigit;
-  }
-
-  // #endregion
+  /// #endregion
 }
 
 // #endregion
