@@ -3,6 +3,7 @@
 .packages
 build/
 pubspec.lock
+coverage
 
 # Conventional directory for build outputs
 dist/

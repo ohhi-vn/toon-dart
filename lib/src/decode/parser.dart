@@ -49,9 +49,9 @@ bool isNumericLiteralFast(String token) {
   int i = 0;
   final first = token.codeUnitAt(0);
 
-  // Optional sign
-  if (first == 0x2D || first == 0x2B) {
-    // '-' or '+'
+  // Optional sign (minus only — per spec §4)
+  if (first == 0x2D) {
+    // '-'
     i++;
     if (i >= token.length) return false;
   }
@@ -134,6 +134,126 @@ bool isNumericLiteralFast(String token) {
 
 // #endregion
 
+// #region Field List Parsing
+
+/// Parses a field list into hierarchical [TabularField] entries.
+///
+/// Handles nested field groups like `{id,customer{name,country},total}`.
+/// Respects quoted names and brace nesting.
+List<TabularField> parseFieldEntries(String content, String delimiter) {
+  final fields = <TabularField>[];
+  int i = 0;
+  final len = content.length;
+  final delimCode = delimiter.length == 1 ? delimiter.codeUnitAt(0) : -1;
+
+  void addField(String name, [List<TabularField>? nested]) {
+    fields.add(TabularField(name, nested));
+  }
+
+  while (i < len) {
+    // Skip leading delimiter
+    if (content.codeUnitAt(i) == delimCode) {
+      i++;
+      continue;
+    }
+
+    // Read the field entry (name + optional nested group)
+    int start = i;
+    int braceDepth = 0;
+    bool inQuotes = false;
+
+    while (i < len) {
+      final c = content.codeUnitAt(i);
+
+      if (c == 0x5C && inQuotes && i + 1 < len) {
+        i += 2;
+        continue;
+      }
+
+      if (c == 0x22) {
+        inQuotes = !inQuotes;
+        i++;
+        continue;
+      }
+
+      if (!inQuotes) {
+        if (c == 0x7B) { // '{'
+          braceDepth++;
+          i++;
+          // Find matching close brace
+          int braceStart = i;
+          while (i < len) {
+            final bc = content.codeUnitAt(i);
+            if (bc == 0x5C && i + 1 < len) {
+              i += 2;
+              continue;
+            }
+            if (bc == 0x22) {
+              i++;
+              continue;
+            }
+            if (bc == 0x7B) {
+              braceDepth++;
+            } else if (bc == 0x7D) {
+              braceDepth--;
+              if (braceDepth == 0) {
+                // Parse nested fields
+                final nestedContent = content.substring(braceStart, i);
+                final nested = parseFieldEntries(nestedContent, delimiter);
+                if (nested.isEmpty) {
+                  throw FormatException(
+                      'Empty field group at position $start');
+                }
+                // Extract field name before the brace
+                final name = content.substring(start, braceStart - 1).trim();
+                addField(parseStringLiteral(name), nested);
+                i++;
+                // Move past delimiter if present
+                if (i < len && content.codeUnitAt(i) == delimCode) {
+                  i++;
+                }
+                // Mark that we've consumed this field group
+                start = i;
+                break;
+              }
+            }
+            i++;
+          }
+          // If braceDepth != 0, unmatched brace; treat rest as field name
+          if (braceDepth != 0) break;
+          break;
+        }
+
+        if (c == delimCode) {
+          if (braceDepth == 0) {
+            final name = content.substring(start, i).trim();
+            if (name.isNotEmpty) {
+              addField(parseStringLiteral(name));
+            }
+            i++;
+            start = i; // Field consumed via delimiter — avoid re-adding at EOF
+            break;
+          }
+        }
+      }
+      i++;
+    }
+
+    // If we reached the end without finding a delimiter or closing brace
+    if (i >= len) {
+      final name = content.substring(start).trim();
+      if (name.isNotEmpty && braceDepth == 0) {
+        addField(parseStringLiteral(name));
+      }
+      break;
+    }
+  }
+
+  return fields;
+}
+
+// #endregion
+
 // #region Array Header Parsing
 
 /// Parses an array header line.
@@ -152,6 +272,10 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
   String defaultDelimiter,
 ) {
   final trimmed = content.trimLeft();
+
+  if (trimmed.isEmpty) {
+    return null;
+  }
 
   // Find the bracket segment, accounting for quoted keys that may contain brackets
   int bracketStart = -1;
@@ -184,10 +308,30 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
         break;
       }
     }
+
+    // For unquoted keys, a colon before the bracket means the bracket is in
+    // the value part and this line is not an array header.
+    if (bracketStart != -1) {
+      for (int i = leadingWhitespace; i < bracketStart; i++) {
+        if (content.codeUnitAt(i) == 0x3A) {
+          return null;
+        }
+      }
+    }
   }
 
   if (bracketStart == -1) {
     return null;
+  }
+
+  // Check for whitespace before bracket: key[...] is valid, but key [...] is not
+  // Per TOON spec §5.2: whitespace before the bracket segment makes the line a
+  // regular key-value line, not an array header
+  if (bracketStart > 0) {
+    final beforeBracket = content.codeUnitAt(bracketStart - 1);
+    if (beforeBracket == 0x20 || beforeBracket == 0x09) {
+      return null;
+    }
   }
 
   // Find closing bracket after opening bracket
@@ -201,6 +345,15 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
   }
   if (bracketEnd == -1) {
     return null;
+  }
+
+  // Per TOON spec §6: No whitespace is permitted between ] and the colon
+  // or field list. Any whitespace there prevents header interpretation.
+  if (bracketEnd + 1 < content.length) {
+    final afterBracket = content.codeUnitAt(bracketEnd + 1);
+    if (afterBracket == 0x20 || afterBracket == 0x09) {
+      return null;
+    }
   }
 
   // Check for fields segment (braces come after bracket)
@@ -227,12 +380,18 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
   }
 
   if (braceStart != -1) {
-    // Find closing brace
+    // Find matching closing brace (handles nested braces)
+    int braceDepth = 1;
     for (int i = braceStart + 1; i < content.length; i++) {
-      if (content.codeUnitAt(i) == 0x7D) {
-        // '}'
-        braceEnd = i + 1;
-        break;
+      final c = content.codeUnitAt(i);
+      if (c == 0x7B) {
+        braceDepth++;
+      } else if (c == 0x7D) {
+        braceDepth--;
+        if (braceDepth == 0) {
+          braceEnd = i + 1;
+          break;
+        }
       }
     }
   }
@@ -255,13 +414,6 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
 
   // Per TOON spec §6: Check for non-whitespace between bracket and brace/colon
   if (braceStart != -1 && braceStart > bracketEnd && braceEnd > braceStart) {
-    // Check between ] and {
-    for (int i = bracketEnd + 1; i < braceStart; i++) {
-      final c = content.codeUnitAt(i);
-      if (c != 0x20 && c != 0x09) {
-        return null; // Non-whitespace between bracket and brace
-      }
-    }
     // Check between } and :
     for (int i = braceEnd; i < colonIndex; i++) {
       final c = content.codeUnitAt(i);
@@ -286,7 +438,7 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
     key = rawKey.codeUnitAt(0) == 0x22 ? parseStringLiteral(rawKey) : rawKey;
   }
 
-  final afterColon = content.substring(colonIndex + 1).trim();
+  final afterColon = trimSpaceOnly(content.substring(colonIndex + 1));
 
   final bracketContent = content.substring(bracketStart + 1, bracketEnd);
 
@@ -302,16 +454,23 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
   final delimiter = parsedBracket.delimiter;
   final hasLengthMarker = parsedBracket.hasLengthMarker;
 
-  // Check for fields segment
   List<String>? fields;
+  List<TabularField>? tabularFields;
   if (braceStart != -1 && braceStart > bracketEnd && braceEnd > braceStart) {
-    final foundBraceEnd = content.indexOf(CLOSE_BRACE, braceStart);
-    if (foundBraceEnd != -1 && foundBraceEnd < colonIndex) {
-      final fieldsContent = content.substring(braceStart + 1, foundBraceEnd);
-      fields = parseDelimitedValues(fieldsContent, delimiter)
-          .map((field) => parseStringLiteral(field.trim()))
-          .toList();
+    final fieldsContent = content.substring(braceStart + 1, braceEnd - 1);
+    // Per TOON spec §6: fields must use the bracket-specified delimiter
+    // If fields use default delimiter instead of bracket delimiter, reject
+    if (delimiter != defaultDelimiter &&
+        fieldsContent.contains(defaultDelimiter)) {
+      // Delimiter mismatch — treat as regular key-value line
+      return null;
     }
+    // Parse hierarchical field entries for nested field groups
+    tabularFields = parseFieldEntries(fieldsContent, delimiter);
+    fields = tabularFields
+        .expand((f) => f.leafNames)
+        .map((f) => parseStringLiteral(f.trim()))
+        .toList();
   }
 
   return ArrayHeaderParseResult(
@@ -320,7 +479,9 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
       length: length,
       delimiter: delimiter,
       fields: fields,
+      tabularFields: tabularFields,
       hasLengthMarker: hasLengthMarker,
+      isKeyed: parsedBracket.isKeyed,
     ),
     inlineValues: afterColon.isEmpty ? null : afterColon,
   );
@@ -328,40 +489,72 @@ ArrayHeaderParseResult? parseArrayHeaderLine(
 
 /// Parses a bracket segment.
 ///
-/// Format: `[N]`, `[#N]`, `[N|]`, `[N\t]`, etc.
+/// Format: `[N]`, `[#N]`, `[N|]`, `[N\t]`, `[N:]`, `[N:|]`, etc.
 ///
-/// Optimized: uses code unit operations for delimiter detection.
+/// Per TOON spec §6:
+/// - Keyed headers use `[N:<delim?>]`
+/// - Length MUST have no leading zeros: "0" or non-zero + digits
 BracketSegmentResult parseBracketSegment(
   String seg,
   String defaultDelimiter,
 ) {
   bool hasLengthMarker = false;
+  bool isKeyed = false;
   String content = seg;
 
   // Check for length marker (#)
   if (content.isNotEmpty && content.codeUnitAt(0) == 0x23) {
-    // '#'
     hasLengthMarker = true;
     content = content.substring(1);
   }
 
-  // Check for delimiter suffix at the end
   String delimiter = defaultDelimiter;
-  if (content.isNotEmpty) {
-    final lastChar = content.codeUnitAt(content.length - 1);
-    if (lastChar == 0x09) {
-      // '\t'
-      delimiter = TAB;
-      content = content.substring(0, content.length - 1);
-    } else if (lastChar == 0x7C) {
-      // '|'
-      delimiter = PIPE;
-      content = content.substring(0, content.length - 1);
+
+  // Check for keyed marker (:)
+  final keyedPos = content.indexOf(':');
+  if (keyedPos != -1) {
+    isKeyed = true;
+    // Parse length (everything before :)
+    final lengthStr = content.substring(0, keyedPos);
+    // Parse delimiter (everything after :)
+    final afterKeyed = content.substring(keyedPos + 1);
+    if (afterKeyed.isNotEmpty) {
+      if (afterKeyed == '\t') {
+        delimiter = TAB;
+      } else if (afterKeyed == '|') {
+        delimiter = PIPE;
+      } else {
+        throw FormatException('Invalid delimiter in keyed bracket segment: $seg');
+      }
+    }
+    content = lengthStr;
+  } else {
+    // Check for delimiter suffix at the end (non-keyed)
+    if (content.isNotEmpty) {
+      final lastChar = content.codeUnitAt(content.length - 1);
+      if (lastChar == 0x09) {
+        delimiter = TAB;
+        content = content.substring(0, content.length - 1);
+      } else if (lastChar == 0x7C) {
+        delimiter = PIPE;
+        content = content.substring(0, content.length - 1);
+      }
     }
   }
 
+  // Validate length: no leading zeros per §6 grammar
+  // Grammar: length = "0" / ( %x31-39 *DIGIT )
+  // Also reject signs (+/-), decimals, exponents, and whitespace
+  // (int.tryParse tolerates surrounding whitespace, but the grammar does not)
+  if (content.isEmpty ||
+      content.codeUnitAt(0) == 0x2B ||
+      content.codeUnitAt(0) == 0x2D ||
+      content.contains(RegExp(r'\s'))) {
+    throw FormatException('Invalid array length: $seg');
+  }
   final length = int.tryParse(content);
-  if (length == null) {
+  if (length == null || length < 0 ||
+      (content.length > 1 && content.codeUnitAt(0) == 0x30)) {
     throw FormatException('Invalid array length: $seg');
   }
 
@@ -369,6 +562,7 @@ BracketSegmentResult parseBracketSegment(
     length: length,
     delimiter: delimiter,
     hasLengthMarker: hasLengthMarker,
+    isKeyed: isKeyed,
   );
 }
 
@@ -419,7 +613,7 @@ List<String> parseDelimitedValues(String input, String delimiter) {
       }
 
       if (c == delimCode && !inQuotes) {
-        values.add(current.toString().trim());
+        values.add(trimSpaceOnly(current.toString()));
         current.clear();
         i++;
         continue;
@@ -457,7 +651,7 @@ List<String> parseDelimitedValues(String input, String delimiter) {
           }
         }
         if (isDelim) {
-          values.add(current.toString().trim());
+          values.add(trimSpaceOnly(current.toString()));
           current.clear();
           i += delimiter.length;
           continue;
@@ -470,7 +664,7 @@ List<String> parseDelimitedValues(String input, String delimiter) {
   }
 
   // Add last value
-  final last = current.toString().trim();
+  final last = trimSpaceOnly(current.toString());
   if (last.isNotEmpty || values.isNotEmpty) {
     values.add(last);
   }
@@ -508,7 +702,7 @@ List<JsonPrimitive> mapRowValuesToPrimitives(List<String> values) {
 @pragma('vm:prefer-inline')
 JsonPrimitive parsePrimitiveToken(String token) {
   // Trim efficiently — avoid creating intermediate string if already trimmed
-  final trimmed = token.trim();
+  final trimmed = trimSpaceOnly(token);
 
   // Empty token
   if (trimmed.isEmpty) {

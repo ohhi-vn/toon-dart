@@ -1,6 +1,29 @@
 import '../utilities/constants.dart';
 import 'literal-utils.dart';
 
+// #region Fast Space-Only Trimming
+
+/// Trims only U+0020 (regular space) from both ends, preserving NBSP and
+/// other Unicode whitespace per TOON spec §7.1. Also trims \r (0x0D) from
+/// the end only, which is always a line-terminator artifact in parsed content.
+String trimSpaceOnly(String value) {
+  int start = 0;
+  int end = value.length;
+  while (start < end && value.codeUnitAt(start) == 0x20) {
+    start++;
+  }
+  while (end > start) {
+    final c = value.codeUnitAt(end - 1);
+    if (c != 0x20 && c != 0x0D) break;
+    end--;
+  }
+  return start == 0 && end == value.length
+      ? value
+      : value.substring(start, end);
+}
+
+// #endregion
+
 // #region Fast String Escaping
 
 /// Escapes special characters in a string for encoding.
@@ -16,7 +39,8 @@ String escapeString(String value) {
   bool needsEscaping = false;
   for (int i = 0; i < value.length; i++) {
     final c = value.codeUnitAt(i);
-    if (c == 0x5C || c == 0x22 || c == 0x0A || c == 0x0D || c == 0x09) {
+    if (c == 0x5C || c == 0x22 || c == 0x0A || c == 0x0D || c == 0x09 ||
+        (c <= 0x1F && c != 0x09 && c != 0x0A && c != 0x0D)) {
       needsEscaping = true;
       break;
     }
@@ -26,7 +50,6 @@ String escapeString(String value) {
   if (!needsEscaping) return value;
 
   // Single-pass escape with pre-allocated buffer
-  // Estimate: original length + 10% margin for escape sequences
   final buffer = StringBuffer();
   for (int i = 0; i < value.length; i++) {
     final c = value.codeUnitAt(i);
@@ -47,7 +70,13 @@ String escapeString(String value) {
         buffer.write(r'\t');
         break;
       default:
-        buffer.writeCharCode(c);
+        if (c <= 0x1F) {
+          // Control character — use \uXXXX
+          buffer.write(r'\u');
+          buffer.write(c.toRadixString(16).padLeft(4, '0'));
+        } else {
+          buffer.writeCharCode(c);
+        }
     }
   }
   return buffer.toString();
@@ -111,6 +140,24 @@ String unescapeString(String value) {
       case 0x22: // '"'
         result.writeCharCode(0x22); // double quote
         i += 2;
+        break;
+      case 0x75: // 'u'
+        // \uXXXX — 4 hex digits
+        if (i + 5 >= value.length) {
+          throw FormatException('Invalid \\u escape sequence: not enough digits');
+        }
+        final hexStr = value.substring(i + 2, i + 6);
+        final codePoint = int.tryParse(hexStr, radix: 16);
+        if (codePoint == null) {
+          throw FormatException('Invalid \\u escape sequence: $hexStr');
+        }
+        // Reject lone surrogate code points (0xD800-0xDFFF)
+        if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+          throw FormatException(
+              'Invalid \\u escape sequence: surrogate code point 0x${hexStr}');
+        }
+        result.writeCharCode(codePoint);
+        i += 6;
         break;
       default:
         throw FormatException(
@@ -316,6 +363,8 @@ bool isSafeUnquoted(String value, [String delimiter = COMMA]) {
       case 0x09: // '\t'
         return false;
       default:
+        // Check for control characters
+        if (c <= 0x1F) return false;
         // Check for delimiter character
         if (c == delimCode) return false;
         break;
@@ -325,6 +374,12 @@ bool isSafeUnquoted(String value, [String delimiter = COMMA]) {
   // Check for hyphen at start (list marker)
   if (firstChar == 0x2D) {
     // '-'
+    return false;
+  }
+
+  // Check for hash at start (comment marker, §7.2)
+  if (firstChar == 0x23) {
+    // '#'
     return false;
   }
 

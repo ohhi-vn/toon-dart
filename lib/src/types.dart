@@ -54,14 +54,18 @@ class ArrayHeaderInfo {
   final int length;
   final Delimiter delimiter;
   final List<String>? fields;
+  final List<TabularField>? tabularFields;
   final bool hasLengthMarker;
+  final bool isKeyed;
 
   const ArrayHeaderInfo({
     this.key,
     required this.length,
     required this.delimiter,
     this.fields,
+    this.tabularFields,
     required this.hasLengthMarker,
+    this.isKeyed = false,
   });
 }
 
@@ -105,11 +109,13 @@ class BracketSegmentResult {
   final int length;
   final String delimiter;
   final bool hasLengthMarker;
+  final bool isKeyed;
 
   const BracketSegmentResult({
     required this.length,
     required this.delimiter,
     required this.hasLengthMarker,
+    this.isKeyed = false,
   });
 }
 
@@ -146,5 +152,37 @@ class KeyValuePairResult {
     required this.key,
     required this.value,
   });
+}
+
+/// A field entry in a tabular or keyed header field list.
+///
+/// A leaf field has [nestedFields] == null and corresponds to one cell.
+/// A nested field group has [nestedFields] != null and expands to
+/// multiple cells in depth-first order.
+class TabularField {
+  final String name;
+  final List<TabularField>? nestedFields;
+
+  const TabularField(this.name, [this.nestedFields]);
+
+  /// Number of leaf cells this field produces in depth-first order.
+  int get leafCount {
+    if (nestedFields == null) return 1;
+    int count = 0;
+    for (final f in nestedFields!) {
+      count += f.leafCount;
+    }
+    return count;
+  }
+
+  /// All leaf field names in depth-first order (dotted paths for nested).
+  List<String> get leafNames {
+    if (nestedFields == null) return [name];
+    final result = <String>[];
+    for (final f in nestedFields!) {
+      result.addAll(f.leafNames);
+    }
+    return result;
+  }
 }
 

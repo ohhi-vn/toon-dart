@@ -143,12 +143,12 @@ void main() {
     group('Encode Tests', () {
       test('Primitives', () => runEncodeTest('Primitives', 'primitives.json'));
       test('Objects', () => runEncodeTest('Objects', 'objects.json'));
+      test('Objects Keyed', () => runEncodeTest('Objects Keyed', 'objects-keyed.json'));
       test('Arrays - Primitive', () => runEncodeTest('Arrays - Primitive', 'arrays-primitive.json'));
       test('Arrays - Tabular', () => runEncodeTest('Arrays - Tabular', 'arrays-tabular.json'));
       test('Arrays - Nested', () => runEncodeTest('Arrays - Nested', 'arrays-nested.json'));
       test('Arrays - Objects', () => runEncodeTest('Arrays - Objects', 'arrays-objects.json'));
       test('Delimiters', () => runEncodeTest('Delimiters', 'delimiters.json'));
-      test('Options', () => runEncodeTest('Options', 'options.json'));
       test('Whitespace', () => runEncodeTest('Whitespace', 'whitespace.json'));
     });
 
@@ -157,6 +157,7 @@ void main() {
       test('Numbers', () => runDecodeTest('Numbers', 'numbers.json'));
       test('Primitives', () => runDecodeTest('Primitives', 'primitives.json'));
       test('Objects', () => runDecodeTest('Objects', 'objects.json'));
+      test('Objects Keyed', () => runDecodeTest('Objects Keyed', 'objects-keyed.json'));
       test('Arrays - Primitive', () => runDecodeTest('Arrays - Primitive', 'arrays-primitive.json'));
       test('Arrays - Tabular', () => runDecodeTest('Arrays - Tabular', 'arrays-tabular.json'));
       test('Arrays - Nested', () => runDecodeTest('Arrays - Nested', 'arrays-nested.json'));
@@ -166,6 +167,7 @@ void main() {
       test('Validation Errors', () => runDecodeTest('Validation Errors', 'validation-errors.json'));
       test('Indentation Errors', () => runDecodeTest('Indentation Errors', 'indentation-errors.json'));
       test('Blank Lines', () => runDecodeTest('Blank Lines', 'blank-lines.json'));
+      test('Comments', () => runDecodeTest('Comments', 'comments.json'));
     });
   });
 }
@@ -174,7 +176,7 @@ void main() {
 EncodeOptions? _parseEncodeOptions(Map<String, dynamic>? options) {
   if (options == null) return null;
   return EncodeOptions(
-    indent: options['indent'] as int? ?? 2,
+    indent: (options['indentSize'] as int? ?? options['indent'] as int?) ?? 2,
     delimiter: options['delimiter'] as String? ?? ',',
     lengthMarker: options['lengthMarker'] as String?,
   );
@@ -184,7 +186,7 @@ EncodeOptions? _parseEncodeOptions(Map<String, dynamic>? options) {
 DecodeOptions? _parseDecodeOptions(Map<String, dynamic>? options) {
   if (options == null) return null;
   return DecodeOptions(
-    indent: options['indent'] as int? ?? 2,
+    indent: (options['indentSize'] as int? ?? options['indent'] as int?) ?? 2,
     strict: options['strict'] as bool? ?? true,
   );
 }

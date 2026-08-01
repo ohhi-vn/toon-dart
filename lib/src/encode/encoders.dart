@@ -35,7 +35,14 @@ String encodeValue(JsonValue value, ResolvedEncodeOptions options) {
   if (isJsonArray(value)) {
     encodeArray(null, value as JsonArray, writer, 0, options);
   } else if (isJsonObject(value)) {
-    encodeObject(value as JsonObject, writer, 0, options);
+    final objValue = value as JsonObject;
+    if (objValue.isNotEmpty && isKeyedTabularEligible(objValue)) {
+      // Root keyed tabular form: no key prefix, keyless keyed header
+      final fields = detectKeyedFields(objValue);
+      _encodeKeyedTabularObject(null, objValue, fields, writer, 0, options);
+    } else {
+      encodeObject(objValue, writer, 0, options);
+    }
   }
 
   return writer.toString();
@@ -97,13 +104,17 @@ void _encodeKeyValuePairInline(String key, JsonValue? value, LineWriter writer,
   } else if (isJsonArray(value)) {
     encodeArray(key, value as JsonArray, writer, depth, options);
   } else if (isJsonObject(value)) {
-    final nestedKeys = (value as JsonObject).keys.toList();
-    if (nestedKeys.isEmpty) {
+    final objValue = value as JsonObject;
+    if (objValue.isEmpty) {
       // Empty object
       writer.pushKeyValue(depth, encodedKey, '');
+    } else if (isKeyedTabularEligible(objValue)) {
+      // Per TOON spec §9.5: Keyed tabular form
+      final fields = detectKeyedFields(objValue);
+      _encodeKeyedTabularObject(encodedKey, objValue, fields, writer, depth, options);
     } else {
       writer.pushKeyValue(depth, encodedKey, '');
-      encodeObject(value, writer, depth + 1, options);
+      encodeObject(objValue, writer, depth + 1, options);
     }
   }
 }
@@ -121,12 +132,13 @@ void encodeArray(
   ResolvedEncodeOptions options,
 ) {
   if (value.isEmpty) {
-    // Optimized: use pushArrayHeader instead of formatHeader + push
-    writer.pushArrayHeader(depth,
-        key: key != null ? encodeKey(key) : null,
-        length: 0,
-        delimiter: options.delimiter,
-        lengthMarker: options.lengthMarker);
+    // Per TOON spec §9.1: Empty arrays under a key use inline [] form;
+    // root-level empty arrays also use [].
+    if (key != null) {
+      writer.pushKeyValue(depth, encodeKey(key), '[]');
+    } else {
+      writer.push(depth, '[]');
+    }
     return;
   }
 
@@ -147,11 +159,13 @@ void encodeArray(
     }
   }
 
-  // Array of objects
+  // Array of objects (tabular format when eligible)
   if (isArrayOfObjects(value)) {
     final objects = value.cast<JsonObject>();
     final header = extractTabularHeader(objects);
-    if (header != null) {
+    // §9.3: Keyless tabular headers (without key prefix) are valid only at
+    // document root (depth 0). In list-item position, use list form instead.
+    if (header != null && (key != null || depth == 0)) {
       encodeArrayOfObjectsAsTabular(
           key, objects, header, writer, depth, options);
     } else {
@@ -198,13 +212,17 @@ void _encodeInlinePrimitiveArray(
 /// needs to be combined with other content on the same line.
 String encodeInlineArrayLine(List<JsonPrimitive> values, String delimiter,
     String? prefix, String? lengthMarker) {
+  // Per TOON spec §9.1: Empty arrays under a key use inline [] form;
+  // list-item empty arrays use [0]: header form.
+  if (values.isEmpty) {
+    if (prefix != null) {
+      return '${encodeKey(prefix)}: []';
+    }
+    return '[0]:';
+  }
   final header = formatHeader(values.length,
       key: prefix, delimiter: delimiter, lengthMarker: lengthMarker);
   final joinedValue = encodeAndJoinPrimitives(values, delimiter);
-  // Only add space if there are values
-  if (values.isEmpty) {
-    return header;
-  }
   return '$header $joinedValue';
 }
 
@@ -254,27 +272,62 @@ void encodeArrayOfArraysAsListItems(
 void encodeArrayOfObjectsAsTabular(
   String? prefix,
   List<JsonObject> rows,
-  List<String> header,
+  List<TabularField> fields,
   LineWriter writer,
   Depth depth,
   ResolvedEncodeOptions options,
 ) {
   final delimiter = options.delimiter;
 
-  // Optimized: build header directly in buffer using pushArrayHeader
-  writer.pushArrayHeader(depth,
-      key: prefix != null ? encodeKey(prefix) : null,
-      length: rows.length,
-      delimiter: delimiter,
-      fields: header.map((f) => encodeKey(f)).toList(),
-      lengthMarker: options.lengthMarker);
+  // Build header with nested field support
+  final hasNested = fields.any((f) => f.nestedFields != null);
+  if (hasNested) {
+    final header = _formatTabularArrayHeader(prefix, rows.length, delimiter, fields, options);
+    writer.push(depth, header);
+  } else {
+    // Simple case: use pushArrayHeader
+    final flatFields = fields.map((f) => encodeKey(f.name)).toList();
+    writer.pushArrayHeader(depth,
+        key: prefix != null ? encodeKey(prefix) : null,
+        length: rows.length,
+        delimiter: delimiter,
+        fields: flatFields,
+        lengthMarker: options.lengthMarker);
+  }
 
-  // Optimized: batch write tabular rows
-  // Pre-encode all rows into strings, then write in one batch.
-  // This avoids per-row method call overhead and allows the writer
-  // to optimize the batch write (single indent computation).
-  final encodedRows = _preEncodeTabularRows(rows, header, delimiter);
+  // Pre-encode all rows
+  final encodedRows = _preEncodeTabularRows(rows, fields, delimiter);
   writer.pushTabularRows(depth + 1, encodedRows);
+}
+
+/// Formats a tabular array header with hierarchical field support.
+String _formatTabularArrayHeader(
+  String? prefix,
+  int length,
+  String delimiter,
+  List<TabularField> fields,
+  ResolvedEncodeOptions options,
+) {
+  final buffer = StringBuffer();
+  if (prefix != null) {
+    buffer.write(encodeKey(prefix));
+  }
+  buffer.write('[');
+  if (options.lengthMarker != null) {
+    buffer.write(options.lengthMarker);
+  }
+  buffer.write(length);
+  if (delimiter != DEFAULT_DELIMITER) {
+    buffer.write(delimiter);
+  }
+  buffer.write(']');
+  if (fields.isNotEmpty) {
+    buffer.write('{');
+    _formatFields(buffer, fields, delimiter);
+    buffer.write('}');
+  }
+  buffer.write(':');
+  return buffer.toString();
 }
 
 /// Pre-encodes tabular rows into strings.
@@ -288,24 +341,21 @@ void encodeArrayOfObjectsAsTabular(
 /// per row due to reduced allocation overhead.
 List<String> _preEncodeTabularRows(
   List<JsonObject> rows,
-  List<String> header,
+  List<TabularField> fields,
   String delimiter,
 ) {
   final result = <String>[];
   // Reuse a single buffer for all rows to reduce allocation
   final buffer = StringBuffer();
-  final headerLength = header.length;
 
   for (final row in rows) {
     buffer.clear();
-    // Inlined: encode values directly without creating intermediate list
-    for (int i = 0; i < headerLength; i++) {
+    final cells = _flattenValues(row, fields);
+    for (int i = 0; i < cells.length; i++) {
       if (i > 0) {
         buffer.write(delimiter);
       }
-      // Inline primitive encoding for common cases
-      final value = row[header[i]];
-      buffer.write(encodePrimitive(value, delimiter));
+      buffer.write(encodePrimitive(cells[i], delimiter));
     }
     result.add(buffer.toString());
   }
@@ -318,17 +368,11 @@ List<String> _preEncodeTabularRows(
 /// Optimized: uses early exit on first non-tabular row.
 /// Only checks keys existence and primitive type — no
 /// intermediate list creation for keys.
-List<String>? extractTabularHeader(List<JsonObject> rows) {
+List<TabularField>? extractTabularHeader(List<JsonObject> rows) {
   if (rows.isEmpty) return null;
 
-  final firstRow = rows[0];
-  final firstKeys = firstRow.keys.toList();
-  if (firstKeys.isEmpty) return null;
-
-  if (isTabularArray(rows, firstKeys)) {
-    return firstKeys;
-  }
-  return null;
+  final fields = extractTabularFields(rows);
+  return fields;
 }
 
 /// Checks if an array of objects is tabular (all have same keys and primitive values).
@@ -383,9 +427,7 @@ void writeTabularRows(
   final headerLength = header.length;
 
   // Pre-allocate row strings list for batch writing
-  final rowStrings = List<String?>.filled(rows.length, null);
-
-  for (int r = 0; r < rows.length; r++) {
+  final rowStrings = List<String>.generate(rows.length, (r) {
     final row = rows[r];
     final buffer = StringBuffer();
     for (int i = 0; i < headerLength; i++) {
@@ -394,11 +436,11 @@ void writeTabularRows(
       }
       buffer.write(encodePrimitive(row[header[i]], delimiter));
     }
-    rowStrings[r] = buffer.toString();
-  }
+    return buffer.toString();
+  }, growable: false);
 
   // Use batch write for better performance
-  writer.pushTabularRows(depth, rowStrings as List<String>);
+  writer.pushTabularRows(depth, rowStrings);
 }
 
 // #endregion
@@ -463,20 +505,26 @@ void encodeObjectAsListItem(JsonObject obj, LineWriter writer, Depth depth,
     } else if (isArrayOfObjects(arr)) {
       // Check if array of objects can use tabular format
       final objects = arr.cast<JsonObject>();
-      final header = extractTabularHeader(objects);
-      if (header != null) {
+      final tabularFields = extractTabularHeader(objects);
+      if (tabularFields != null) {
         // Per TOON spec §10: Tabular header on hyphen line, rows at depth +2
-        // Optimized: build header directly in buffer
-        final headerStr = formatHeader(arr.length,
-            key: firstKey,
-            fields: header,
-            delimiter: options.delimiter,
-            lengthMarker: options.lengthMarker);
-        writer.pushListItem(depth, headerStr);
+        final hasNested = tabularFields.any((f) => f.nestedFields != null);
+        if (hasNested) {
+          final headerStr = _formatTabularArrayHeader(
+              firstKey, arr.length, options.delimiter, tabularFields, options);
+          writer.pushListItem(depth, headerStr);
+        } else {
+          final flatFields = tabularFields.map((f) => encodeKey(f.name)).toList();
+          final headerStr = formatHeader(arr.length,
+              key: firstKey,
+              fields: flatFields,
+              delimiter: options.delimiter,
+              lengthMarker: options.lengthMarker);
+          writer.pushListItem(depth, headerStr);
+        }
         // Rows at depth +2 relative to the hyphen line
-        // Optimized: batch write rows
         final encodedRows =
-            _preEncodeTabularRows(objects, header, options.delimiter);
+            _preEncodeTabularRows(objects, tabularFields, options.delimiter);
         writer.pushTabularRows(depth + 2, encodedRows);
       } else {
         // Fall back to list format for non-uniform arrays of objects
@@ -494,12 +542,41 @@ void encodeObjectAsListItem(JsonObject obj, LineWriter writer, Depth depth,
       }
     }
   } else if (isJsonObject(firstValue)) {
-    final nestedKeys = (firstValue as JsonObject).keys.toList();
-    if (nestedKeys.isEmpty) {
+    final objValue = firstValue as JsonObject;
+    if (objValue.isEmpty) {
       writer.pushListItem(depth, '$encodedKey:');
+    } else if (isKeyedTabularEligible(objValue)) {
+      // Per TOON spec §10 + §9.5: Keyed header on hyphen line, entry rows at depth +2
+      final fields = detectKeyedFields(objValue);
+      final headerStr = _formatKeyedHeader(encodedKey,
+          objValue.length, options.delimiter, fields);
+      writer.pushListItem(depth, headerStr);
+      // Entry rows at depth +2 relative to hyphen line
+      int entryIndex = 0;
+      for (final entry in objValue.entries) {
+        entryIndex++;
+        final entryKey = encodeKey(entry.key);
+        final entryObj = entry.value as JsonObject;
+        final cells = _flattenValues(entryObj, fields);
+        final cellBuffer = StringBuffer();
+        cellBuffer.write(entryKey);
+        cellBuffer.write(':');
+        if (cells.isNotEmpty) {
+          cellBuffer.write(' ');
+          for (int i = 0; i < cells.length; i++) {
+            if (i > 0) cellBuffer.write(options.delimiter);
+            cellBuffer.write(encodePrimitive(cells[i], options.delimiter));
+          }
+        }
+        if (entryIndex == 1) {
+          writer.push(depth + 2, cellBuffer.toString());
+        } else {
+          writer.push(depth + 2, cellBuffer.toString());
+        }
+      }
     } else {
       writer.pushListItem(depth, '$encodedKey:');
-      encodeObject(firstValue, writer, depth + 2, options);
+      encodeObject(objValue, writer, depth + 2, options);
     }
   }
 
@@ -547,27 +624,13 @@ void encodeListItemValue(
         }
       }
     } else if (isArrayOfObjects(arr)) {
-      // Array of objects - check if tabular
-      final objects = arr.cast<JsonObject>();
-      final header = extractTabularHeader(objects);
-      if (header != null) {
-        // Tabular format — optimized batch write
-        final headerStr = formatHeader(arr.length,
-            fields: header,
-            delimiter: options.delimiter,
-            lengthMarker: options.lengthMarker);
-        writer.pushListItem(depth, headerStr);
-        final encodedRows =
-            _preEncodeTabularRows(objects, header, options.delimiter);
-        writer.pushTabularRows(depth + 1, encodedRows);
-      } else {
-        // Expanded list format
-        final listHeader = formatHeader(arr.length,
-            delimiter: options.delimiter, lengthMarker: options.lengthMarker);
-        writer.pushListItem(depth, listHeader);
-        for (final item in objects) {
-          encodeObjectAsListItem(item, writer, depth + 1, options);
-        }
+      // Keyless array of objects in list-item position — use list form
+      // per §9.3 (keyless tabular headers are valid only at document root).
+      final listHeader = formatHeader(arr.length,
+          delimiter: options.delimiter, lengthMarker: options.lengthMarker);
+      writer.pushListItem(depth, listHeader);
+      for (final item in arr) {
+        encodeObjectAsListItem(item as JsonObject, writer, depth + 1, options);
       }
     } else {
       // Mixed array - use expanded list format
@@ -581,6 +644,108 @@ void encodeListItemValue(
     }
   } else if (isJsonObject(value)) {
     encodeObjectAsListItem(value as JsonObject, writer, depth, options);
+  }
+}
+
+/// Formats a keyed header: key[N:<delim?>]{fields}: or [N:<delim?>]{fields}:
+String _formatKeyedHeader(
+  String? key,
+  int length,
+  String delimiter,
+  List<TabularField> fields,
+) {
+  final buffer = StringBuffer();
+  if (key != null) {
+    buffer.write(key);
+  }
+  buffer.write('[');
+  buffer.write(length);
+  buffer.write(':');
+  if (delimiter != DEFAULT_DELIMITER) {
+    buffer.write(delimiter);
+  }
+  buffer.write(']');
+  if (fields.isNotEmpty) {
+    buffer.write('{');
+    _formatFields(buffer, fields, delimiter);
+    buffer.write('}');
+  }
+  buffer.write(':');
+  return buffer.toString();
+}
+
+/// Recursively writes field entries to a buffer.
+void _formatFields(StringBuffer buffer, List<TabularField> fields, String delimiter) {
+  for (int i = 0; i < fields.length; i++) {
+    if (i > 0) buffer.write(delimiter);
+    buffer.write(encodeKey(fields[i].name));
+    final nested = fields[i].nestedFields;
+    if (nested != null && nested.isNotEmpty) {
+      buffer.write('{');
+      _formatFields(buffer, nested, delimiter);
+      buffer.write('}');
+    }
+  }
+}
+
+/// Recursively flattens object values into depth-first leaf cells.
+List<JsonPrimitive> _flattenValues(JsonObject obj, List<TabularField> fields) {
+  final result = <JsonPrimitive>[];
+  for (final field in fields) {
+    final value = obj[field.name];
+    if (field.nestedFields != null) {
+      result.addAll(_flattenValues(value as JsonObject, field.nestedFields!));
+    } else {
+      // Leaf field
+      result.add(isJsonPrimitive(value) ? value : null);
+    }
+  }
+  return result;
+}
+
+/// Encodes an object in keyed tabular form (§9.5).
+void _encodeKeyedTabularObject(
+  String? key,
+  JsonObject obj,
+  List<TabularField> fields,
+  LineWriter writer,
+  Depth depth,
+  ResolvedEncodeOptions options,
+) {
+  final delimiter = options.delimiter;
+  final headerStr = _formatKeyedHeader(
+    key,
+    obj.length,
+    delimiter,
+    fields,
+  );
+  writer.push(depth, headerStr);
+
+  // Write entry rows
+  final entryDepth = depth + 1;
+  int entryIndex = 0;
+  for (final entry in obj.entries) {
+    entryIndex++;
+    final entryKey = encodeKey(entry.key);
+    final entryObj = entry.value as JsonObject;
+    final cells = _flattenValues(entryObj, fields);
+
+    final buffer = StringBuffer();
+    buffer.write(entryKey);
+    buffer.write(':');
+    if (cells.isNotEmpty) {
+      buffer.write(' ');
+      for (int i = 0; i < cells.length; i++) {
+        if (i > 0) buffer.write(delimiter);
+        buffer.write(encodePrimitive(cells[i], delimiter));
+      }
+    }
+
+    if (entryIndex == 1) {
+      writer.push(entryDepth, buffer.toString());
+    } else {
+      writer.push(entryDepth, buffer.toString());
+    }
   }
 }
 

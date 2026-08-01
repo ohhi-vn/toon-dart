@@ -13,6 +13,7 @@ library scanners;
 
 import '../types.dart';
 import '../utilities/constants.dart';
+import '../utilities/string-utils.dart';
 
 // #region Scan Result
 
@@ -194,19 +195,14 @@ ScanResult toParsedLines(String source, int indentSize, bool strict) {
       bool isBlank = pos == rawLen;
       if (!isBlank) {
         // Check remaining characters for non-whitespace
+        // (include \r as whitespace — it's a line-terminator artifact)
         for (int j = pos; j < rawLen; j++) {
           final c = source.codeUnitAt(lineStart + j);
-          if (c != 0x20 && c != 0x09) {
+          if (c != 0x20 && c != 0x09 && c != 0x0D) {
             isBlank = false;
             break;
           }
-        }
-        // Re-check: if we broke early, it's not blank
-        if (pos < rawLen) {
-          final c = source.codeUnitAt(lineStart + pos);
-          if (c != 0x20 && c != 0x09) {
-            isBlank = false;
-          }
+          isBlank = true;
         }
       }
 
@@ -216,6 +212,17 @@ ScanResult toParsedLines(String source, int indentSize, bool strict) {
         blankLines.add(BlankLineInfo(
             lineNumber: lineNumber, indent: indent, depth: depth));
       } else {
+        // Check for comment line (§5.1):
+        // First non-space char must be #, and no tabs in leading whitespace
+        final isComment = tabCount == 0 && pos < rawLen &&
+            source.codeUnitAt(lineStart + pos) == 0x23; // '#'
+
+        if (isComment) {
+          // Skip comment lines entirely
+          lineStart = i + 1;
+          continue;
+        }
+
         // Strict mode validation
         if (strict) {
           // Check for tabs in leading whitespace
@@ -352,26 +359,20 @@ LineType classifyLine(String content, String delimiter) {
 
   // Key-value: has colon (and it's not a data row)
   if (colonPos != -1) {
-    // Check if delimiter comes before colon (data row)
+    // Check if delimiter comes before colon (data row), skipping quoted sections
     if (delimiter.length == 1) {
-      final delimCode = delimiter.codeUnitAt(0);
-      for (int i = 0; i < colonPos; i++) {
-        if (content.codeUnitAt(i) == delimCode) {
-          return LineType.dataRow;
-        }
+      final delimPos = findUnquotedChar(content, delimiter);
+      if (delimPos != -1 && delimPos < colonPos) {
+        return LineType.dataRow;
       }
     }
     return LineType.keyValue;
   }
 
   // No colon: could be data row or primitive
-  if (delimiter.length == 1) {
-    final delimCode = delimiter.codeUnitAt(0);
-    for (int i = 0; i < content.length; i++) {
-      if (content.codeUnitAt(i) == delimCode) {
-        return LineType.dataRow;
-      }
-    }
+  if (delimiter.length == 1 &&
+      findUnquotedChar(content, delimiter) != -1) {
+    return LineType.dataRow;
   }
 
   return LineType.primitive;

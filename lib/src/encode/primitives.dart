@@ -1,5 +1,3 @@
-import 'dart:math';
-
 import '../types.dart';
 import '../utilities/constants.dart';
 import '../utilities/string-utils.dart';
@@ -24,86 +22,53 @@ String encodePrimitive(JsonPrimitive value, [String? delimiter]) {
   return encodeStringLiteral(value as String, delimiter ?? COMMA);
 }
 
-/// Encodes a number in canonical decimal form per TOON spec §2.
+/// Encodes a number in canonical form per TOON spec §2.
 ///
-/// Canonical form rules:
-/// - No exponent notation (e.g., 1e6 → 1000000)
-/// - No leading zeros except single "0"
-/// - No trailing zeros in fractional part (e.g., 1.5000 → 1.5)
-/// - If fractional part is zero, emit as integer (e.g., 1.0 → 1)
-/// - -0 → 0
+/// Canonical decimal form (no exponent) is REQUIRED when:
+/// - n = 0
+/// - 1e-6 ≤ |n| < 1e21
+///
+/// Outside this range, exponent notation MAY be used.
 String _encodeNumber(num value) {
   // Handle integers directly
   if (value is int) {
     return value.toString();
   }
 
-  // Handle doubles
-  if (value is double) {
+  // Handle doubles (num is sealed to int|double, so this cast is safe)
+  final double d = value as double;
+  {
     // Normalize -0 to 0
-    if (value == 0.0) {
+    if (d == 0.0) {
       return '0';
     }
 
     // Handle non-finite values (should be normalized to null before encoding)
-    if (!value.isFinite) {
+    if (!d.isFinite) {
       return NULL_LITERAL;
     }
 
+    // Check if within canonical decimal range
+    // Must use decimal when |n| >= 1e-6 and |n| < 1e21, or n == 0
+    final absValue = d.abs();
+    final inCanonicalRange = absValue >= 1e-6 && absValue < 1e21;
+
+    if (!inCanonicalRange) {
+      // Outside canonical range — MAY use exponent notation
+      return d.toString();
+    }
+
     // Check if it's actually an integer value
-    if (value == value.truncateToDouble()) {
+    if (d == d.truncateToDouble()) {
       // It's a whole number - format without decimal point
       // Use toStringAsFixed(0) to avoid scientific notation for large numbers
-      return value.toStringAsFixed(0);
+      return d.toStringAsFixed(0);
     }
 
-    // It's a decimal number - need canonical form
-    // Strategy: Use toString() first, which gives good precision
-    // If it contains exponent notation, convert to fixed notation
-    String str = value.toString();
-
-    if (str.contains('e') || str.contains('E')) {
-      // Need to convert from scientific notation to decimal
-      // Calculate appropriate decimal places based on the number
-      final absValue = value.abs();
-      int decimalPlaces;
-
-      if (absValue >= 1) {
-        // For numbers >= 1, use enough precision for ~15 significant digits
-        final intPart = value.truncateToDouble().abs();
-        final intDigits = intPart == 0 ? 1 : (log(intPart) / ln10).floor() + 1;
-        decimalPlaces = (15 - intDigits).clamp(0, 17).toInt();
-      } else {
-        // For small numbers < 1, find the first significant digit
-        final log10 = (log(value.abs()) / ln10).floor();
-        decimalPlaces = -log10 + 14;
-      }
-
-      str = value.toStringAsFixed(decimalPlaces);
-    }
-
-    // Remove trailing zeros after decimal point (code unit approach, no regex)
-    if (str.contains('.')) {
-      // Find the last non-zero digit after decimal point
-      int end = str.length - 1;
-      while (end >= 0 && str.codeUnitAt(end) == 0x30) {
-        // '0'
-        end--;
-      }
-      // Remove trailing zeros
-      if (end >= 0 && str.codeUnitAt(end) == 0x2E) {
-        // '.' - no fractional part
-        str = str.substring(0, end); // Remove decimal point
-      } else if (end < str.length - 1) {
-        str = str.substring(0, end + 1);
-      }
-    }
-
-    return str;
+    // It's a decimal number in canonical range — toString() already produces
+    // canonical decimal form for non-integer doubles in [1e-6, 1e21).
+    return d.toString();
   }
-
-  // Fallback (should not reach here)
-  return value.toString();
 }
 
 /// Encodes a string literal, adding quotes if necessary.

@@ -14,19 +14,20 @@ Future<void> main() async {
   final encodeFiles = [
     'primitives.json',
     'objects.json',
+    'objects-keyed.json',
     'arrays-primitive.json',
     'arrays-tabular.json',
     'arrays-nested.json',
     'arrays-objects.json',
     'delimiters.json',
     'whitespace.json',
-    'options.json',
   ];
 
   final decodeFiles = [
     'primitives.json',
     'numbers.json',
     'objects.json',
+    'objects-keyed.json',
     'arrays-primitive.json',
     'arrays-tabular.json',
     'arrays-nested.json',
@@ -36,6 +37,7 @@ Future<void> main() async {
     'validation-errors.json',
     'indentation-errors.json',
     'blank-lines.json',
+    'comments.json',
   ];
 
   final client = HttpClient();

@@ -20,7 +20,7 @@
 /// - Schema-based direct field indexing (no Map.keys iteration)
 /// - Stream decoding for O(1) memory per item
 ///
-/// For specification, see: https://github.com/johannschopplich/toon/blob/main/SPEC.md
+/// For specification, see: https://github.com/toon-format/spec/blob/main/SPEC.md
 library toon_format;
 
 // #region Options export

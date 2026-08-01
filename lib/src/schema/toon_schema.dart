@@ -698,42 +698,35 @@ String _encodeNumberCanonical(num value) {
     return value.toString();
   }
 
-  // Handle doubles
-  if (value is double) {
+  // Handle doubles (num is sealed to int|double, so this cast is safe)
+  final double d = value as double;
+  {
     // Normalize -0 to 0
-    if (value == 0.0) {
+    if (d == 0.0) {
       return '0';
     }
 
     // Handle non-finite values
-    if (!value.isFinite) {
+    if (!d.isFinite) {
       return 'null';
     }
 
     // Check if it's actually an integer value
-    if (value == value.truncateToDouble()) {
+    if (d == d.truncateToDouble()) {
       // It's a whole number - format without decimal point
-      return value.toStringAsFixed(0);
+      return d.toStringAsFixed(0);
     }
 
     // It's a decimal number - need canonical form
-    String str = value.toString();
+    String str = d.toString();
 
     if (str.contains('e') || str.contains('E')) {
       // Convert from scientific notation to decimal
-      final absValue = value.abs();
-      int decimalPlaces;
-
-      if (absValue >= 1) {
-        final intPart = value.truncateToDouble().abs();
-        final intDigits = intPart == 0 ? 1 : (log(intPart) / ln10).floor() + 1;
-        decimalPlaces = (15 - intDigits).clamp(0, 17).toInt();
-      } else {
-        final log10 = (log(value.abs()) / ln10).floor();
-        decimalPlaces = -log10 + 14;
-      }
-
-      str = value.toStringAsFixed(decimalPlaces);
+      // Only non-integer decimals < 1 reach here (doubles >= 1e16 with
+      // scientific notation are all whole numbers, caught above).
+      final log10 = (log(d.abs()) / ln10).floor();
+      final decimalPlaces = (-log10 + 14).clamp(0, 20).toInt();
+      str = d.toStringAsFixed(decimalPlaces);
     }
 
     // Remove trailing zeros after decimal point
@@ -746,8 +739,6 @@ String _encodeNumberCanonical(num value) {
 
     return str;
   }
-
-  return value.toString();
 }
 
 /// Fast primitive-to-string conversion (inlined hot path).

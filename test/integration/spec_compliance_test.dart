@@ -3,7 +3,7 @@ import 'package:toon_format/toon_format.dart';
 
 /// Integration tests for TOON specification compliance.
 ///
-/// These tests verify critical behaviors defined in the TOON spec v3.0:
+/// These tests verify critical behaviors defined in the TOON spec v4.1:
 /// - Number canonicalization (§2)
 /// - String quoting rules (§7.2, §11.1)
 /// - Array headers and delimiter scoping (§6, §11)
@@ -152,9 +152,9 @@ void main() {
       expect(result, equals('tags[3|]: a|b|c'));
     });
 
-    test('should encode empty array', () {
+    test('should encode empty array as inline form', () {
       final result = encode({'tags': []});
-      expect(result, equals('tags[0]:'));
+      expect(result, equals('tags: []'));
     });
 
     test('should quote values containing active delimiter in arrays', () {
@@ -199,7 +199,7 @@ void main() {
       expect(result.contains('{'), isFalse);
     });
 
-    test('should not encode arrays with nested objects as tabular', () {
+    test('should encode uniform nested objects as tabular with nested field groups', () {
       final result = encode({
         'items': [
           {
@@ -212,7 +212,7 @@ void main() {
           }
         ]
       });
-      expect(result.contains('{'), isFalse);
+      expect(result, equals('items[2]{id,data{x}}:\n  1,1\n  2,2'));
     });
 
     test('should decode tabular array correctly', () {
@@ -513,6 +513,55 @@ void main() {
         ]
       });
       expect(result.contains('items[3]:'), isTrue);
+    });
+
+    test('should decode bare hyphen list item as empty object', () {
+      final result = decode('items[1]:\n  -');
+      expect(result, equals({'items': [{}]}));
+    });
+
+    test('should decode hyphen with only whitespace as empty object', () {
+      final result = decode('items[1]:\n  - ');
+      expect(result, equals({'items': [{}]}));
+    });
+
+    test('should error on empty inline array with count mismatch in strict mode', () {
+      expect(
+        () => decode('items[3]:'),
+        throwsA(isA<RangeError>()),
+      );
+    });
+
+    test('should decode non-strict keyed header without fields', () {
+      final result = decode('items[2:]:\n  a:\n  b:',
+          options: const DecodeOptions(strict: false));
+      expect(result, equals({'items': {'a': {}, 'b': {}}}));
+    });
+
+    test('should parse quoted field names with escaped quotes in headers', () {
+      final result = decode(r'"a\"b": 42');
+      expect(result, equals({'a"b': 42}));
+    });
+
+    test('should decode root array header', () {
+      final result = decode('[2]{a,b}:\n  1,x\n  2,y');
+      expect(result, equals([
+        {'a': 1.0, 'b': 'x'},
+        {'a': 2.0, 'b': 'y'},
+      ]));
+    });
+
+    test('should decode single-line root array with inline value', () {
+      final result = decode('[1]: 42');
+      expect(result, equals([42]));
+    });
+
+    test('should decode tabular row with delimiter before colon', () {
+      final result = decode('items[2]{a,b}:\n  1,2:x\n  3,4:y');
+      expect(result, equals({'items': [
+        {'a': 1.0, 'b': '2:x'},
+        {'a': 3.0, 'b': '4:y'},
+      ]}));
     });
   });
 }
