@@ -1,5 +1,48 @@
+import 'dart:typed_data';
+
 import 'package:test/test.dart';
 import 'package:toon_format/toon_format.dart';
+
+/// Removes the embedded-schema section from a schema-mode [bytes] message,
+/// simulating a message whose schema was shared out-of-band.
+Uint8List _stripEmbeddedSchema(Uint8List bytes) {
+  final data = ByteData.sublistView(bytes);
+  final flags = bytes[5];
+  var offset = 8;
+  int readUint32() {
+    final v = data.getUint32(offset, Endian.little);
+    offset += 4;
+    return v;
+  }
+
+  if ((flags & 0x04) != 0) {
+    final count = readUint32();
+    for (var i = 0; i < count; i++) {
+      final length = readUint32();
+      offset += length;
+    }
+  }
+  if ((flags & 0x02) != 0) {
+    readUint32(); // schema id
+    final nameLength = readUint32();
+    offset += nameLength;
+    final fieldCount = readUint32();
+    for (var i = 0; i < fieldCount; i++) {
+      final fieldNameLength = readUint32();
+      offset += fieldNameLength;
+      offset += 1; // element code
+    }
+  }
+  while (offset % 8 != 0) {
+    offset++;
+  }
+  final body = Uint8List.sublistView(bytes, offset);
+  final result = Uint8List(8 + body.length);
+  result.setAll(0, bytes.sublist(0, 8));
+  result[5] = flags & ~0x02;
+  result.setAll(8, body);
+  return result;
+}
 
 void main() {
   group('encode public API', () {
@@ -124,6 +167,143 @@ void main() {
       expect(rows, equals([
         {'id': 1, 'name': 'Alice'},
       ]));
+    });
+  });
+
+  group('btoonEncodeWithSchema public API', () {
+    test('encodes a map in schema mode with an embedded schema', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('id', type: BtoonSchemaType.integer),
+        const BtoonSchemaField('name', type: BtoonSchemaType.string),
+      ]);
+      final bytes = btoonEncodeWithSchema({'id': 1, 'name': 'Alice'}, schema);
+      expect(bytes[5] & 0x02, 0x02); // flagHasSchema
+      expect(btoonDecode(bytes), {'id': 1, 'name': 'Alice'});
+    });
+
+    test('encodes a list of maps', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('id', type: BtoonSchemaType.integer),
+        const BtoonSchemaField('name', type: BtoonSchemaType.string),
+      ]);
+      final bytes = btoonEncodeWithSchema([
+        {'id': 1, 'name': 'Alice'},
+        {'id': 2, 'name': 'Bob'},
+      ], schema);
+      expect(btoonDecode(bytes), [
+        {'id': 1, 'name': 'Alice'},
+        {'id': 2, 'name': 'Bob'},
+      ]);
+    });
+
+    test('throws BtoonEncodeError for a non-object root', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('id', type: BtoonSchemaType.integer),
+      ]);
+      expect(
+        () => btoonEncodeWithSchema(42, schema),
+        throwsA(isA<BtoonEncodeError>()),
+      );
+    });
+  });
+
+  group('btoonDecodeWithSchema public API', () {
+    test('decodes schema-mode bytes with an out-of-band schema', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('id', type: BtoonSchemaType.integer),
+        const BtoonSchemaField('name', type: BtoonSchemaType.string),
+      ], id: 3, name: 'user');
+      final bytes = _stripEmbeddedSchema(
+        btoonEncodeWithSchema({'id': 1, 'name': 'Alice'}, schema),
+      );
+      expect(btoonDecodeWithSchema(bytes, schema), {'id': 1, 'name': 'Alice'});
+    });
+
+    test('decodes a single record as a map', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('id', type: BtoonSchemaType.integer),
+      ]);
+      final bytes = btoonEncodeWithSchema({'id': 1}, schema);
+      expect(btoonDecodeWithSchema(bytes, schema), {'id': 1});
+    });
+
+    test('mismatched schema id fails', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('a', type: BtoonSchemaType.integer),
+      ], id: 7, name: 'Seven');
+      final bytes = _stripEmbeddedSchema(btoonEncodeWithSchema({'a': 1}, schema));
+      final other = BtoonSchema([
+        const BtoonSchemaField('a', type: BtoonSchemaType.integer),
+      ], id: 99, name: 'Other');
+      expect(
+        () => btoonDecodeWithSchema(bytes, other),
+        throwsA(isA<BtoonDecodeError>()),
+      );
+    });
+  });
+
+  group('btoonDeriveSchema public API', () {
+    test('derives a schema from a map', () {
+      final schema = btoonDeriveSchema({
+        'id': 1,
+        'name': 'Alice',
+        'active': true,
+        'score': 9.5,
+      });
+      expect(schema.fieldNames, ['active', 'id', 'name', 'score']);
+      BtoonSchemaType typeOf(String name) =>
+          schema.fields.firstWhere((f) => f.name == name).type;
+      expect(typeOf('id'), BtoonSchemaType.integer);
+      expect(typeOf('name'), BtoonSchemaType.string);
+      expect(typeOf('active'), BtoonSchemaType.boolean);
+      expect(typeOf('score'), BtoonSchemaType.number);
+    });
+
+    test('derives the union of keys across a list of maps', () {
+      final schema = btoonDeriveSchema([
+        {'id': 1, 'name': 'Alice'},
+        {'id': 2, 'name': 'Bob', 'age': 30},
+      ]);
+      expect(schema.fieldNames, ['age', 'id', 'name']);
+      final age = schema.fields.firstWhere((f) => f.name == 'age');
+      expect(age.type, BtoonSchemaType.integer);
+    });
+
+    test('throws for a non-object root', () {
+      expect(() => btoonDeriveSchema(42), throwsA(isA<BtoonEncodeError>()));
+      expect(() => btoonDeriveSchema([1, 2, 3]),
+          throwsA(isA<BtoonEncodeError>()));
+    });
+  });
+
+  group('btoonEncodeAuto public API', () {
+    test('encodes a map in schema mode with an embedded schema', () {
+      final bytes = btoonEncodeAuto({'id': 1, 'name': 'Alice'});
+      expect(bytes[5] & 0x02, 0x02); // flagHasSchema
+      expect(btoonDecode(bytes), {'id': 1, 'name': 'Alice'});
+    });
+
+    test('encodes a list of maps', () {
+      final bytes = btoonEncodeAuto([
+        {'id': 1, 'name': 'Alice'},
+        {'id': 2, 'name': 'Bob'},
+      ]);
+      expect(btoonDecode(bytes), [
+        {'id': 1, 'name': 'Alice'},
+        {'id': 2, 'name': 'Bob'},
+      ]);
+    });
+
+    test('derived schema decodes out-of-band', () {
+      final schema = btoonDeriveSchema({'id': 1, 'name': 'Alice'});
+      final bytes = _stripEmbeddedSchema(
+        btoonEncodeAuto({'id': 1, 'name': 'Alice'}),
+      );
+      expect(btoonDecodeWithSchema(bytes, schema), {'id': 1, 'name': 'Alice'});
+    });
+
+    test('throws for a non-object root', () {
+      expect(() => btoonEncodeAuto(42), throwsA(isA<BtoonEncodeError>()));
     });
   });
 

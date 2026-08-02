@@ -79,6 +79,10 @@ export 'src/stream/stream_decoder.dart'
 
 // #region Internal imports
 
+import 'dart:typed_data';
+
+import 'src/btoon/btoon.dart';
+import 'src/btoon/encoder.dart';
 import 'src/decode/decoders.dart';
 import 'src/decode/scanners.dart';
 import 'src/encode/encoders.dart';
@@ -200,6 +204,138 @@ List<Map<String, dynamic>> decodeWithSchema(
   String delimiter = ',',
 }) {
   return decodeTabularWithSchema(rows, schema, delimiter: delimiter);
+}
+
+// #endregion
+
+// #region BTOON Schema Encode/Decode API
+
+/// Encodes a value to BTOON schema mode using [schema].
+///
+/// Schema mode drops keys and tags: values are written positionally using
+/// the schema's field order and types, making this the most compact BTOON
+/// encoding for structured records. The schema is embedded into the message,
+/// so a decoder with access to the message decodes it without sharing the
+/// schema out-of-band.
+///
+/// [value] must be a `Map` with string keys, or a `List` of such maps.
+/// [schema] Schema defining field order and types
+/// [options] Optional encoding options (session, string table frequency, ...)
+/// Returns the encoded BTOON bytes
+///
+/// Example:
+/// ```dart
+/// final schema = BtoonSchema([
+///   const BtoonSchemaField('id', type: BtoonSchemaType.integer),
+///   const BtoonSchemaField('name', type: BtoonSchemaType.string),
+/// ]);
+/// final bytes = btoonEncodeWithSchema({'id': 1, 'name': 'Alice'}, schema);
+/// final data = btoonDecode(bytes); // {'id': 1, 'name': 'Alice'}
+/// ```
+Uint8List btoonEncodeWithSchema(
+  Object? value,
+  BtoonSchema schema, {
+  BtoonEncodeOptions? options,
+}) {
+  return btoonEncode(
+    value,
+    options: BtoonEncodeOptions(
+      session: options?.session,
+      growSession: options?.growSession ?? true,
+      minStringTableFrequency: options?.minStringTableFrequency ?? 2,
+      schema: schema,
+      schemaMode: true,
+    ),
+  );
+}
+
+/// Decodes a BTOON schema-mode binary using [schema].
+///
+/// [schema] must match the schema the message was encoded with (same id and
+/// field order). If the message embedded its own schema it is used for
+/// decoding; pass [schema] for out-of-band schema sharing (messages encoded
+/// without an embedded schema).
+///
+/// Returns a `Map` for a single record, or a `List<Map>` for repeated
+/// records. Throws [BtoonDecodeError] if [bytes] is malformed or [schema]
+/// does not match the message.
+///
+/// Example:
+/// ```dart
+/// final data = btoonDecodeWithSchema(bytes, schema);
+/// ```
+Object? btoonDecodeWithSchema(
+  Uint8List bytes,
+  BtoonSchema schema, {
+  BtoonDecodeOptions? options,
+}) {
+  return btoonDecode(
+    bytes,
+    options: BtoonDecodeOptions(
+      session: options?.session,
+      growSession: options?.growSession ?? true,
+      schema: schema,
+      preserveBinary: options?.preserveBinary ?? false,
+      preserveTypedArrays: options?.preserveTypedArrays ?? false,
+    ),
+  );
+}
+
+// #endregion
+
+// #region BTOON Auto Schema Encode API
+
+/// Derives a [BtoonSchema] by inspecting [value].
+///
+/// For a `Map`, fields are the map's sorted keys with types inferred from
+/// their values. For a `List` of maps, fields are the sorted union of all
+/// keys with types inferred from the first non-null value across the rows.
+///
+/// Throws [BtoonEncodeError] if [value] is not a `Map` or a `List` of maps.
+///
+/// Example:
+/// ```dart
+/// final schema = btoonDeriveSchema({'id': 1, 'name': 'Alice'});
+/// // fields: id (integer), name (string)
+/// ```
+BtoonSchema btoonDeriveSchema(Object? value) {
+  final schema = deriveBtoonSchema(value);
+  if (schema == null) {
+    throw BtoonEncodeError(
+      'schema derivation requires a map or a list of maps at the root',
+      value,
+    );
+  }
+  return schema;
+}
+
+/// Encodes [value] to BTOON schema mode with an auto-detected schema.
+///
+/// The schema is derived from [value] (see [btoonDeriveSchema]) and embedded
+/// into the message, so the result decodes with [btoonDecode] without sharing
+/// the schema out-of-band.
+///
+/// Throws [BtoonEncodeError] if [value] is not a `Map` or a `List` of maps.
+///
+/// Example:
+/// ```dart
+/// final bytes = btoonEncodeAuto({'id': 1, 'name': 'Alice'});
+/// final data = btoonDecode(bytes); // {'id': 1, 'name': 'Alice'}
+/// ```
+Uint8List btoonEncodeAuto(
+  Object? value, {
+  BtoonEncodeOptions? options,
+}) {
+  return btoonEncode(
+    value,
+    options: BtoonEncodeOptions(
+      session: options?.session,
+      growSession: options?.growSession ?? true,
+      minStringTableFrequency: options?.minStringTableFrequency ?? 2,
+      schema: btoonDeriveSchema(value),
+      schemaMode: true,
+    ),
+  );
 }
 
 // #endregion

@@ -576,6 +576,14 @@ void _writeSchemaNumeric(BtoonWriter writer, int code, num value) {
 
 // #region Schema derivation
 
+/// Derives a [BtoonSchema] from [value] by inspecting map keys and value
+/// types, or returns null when [value] is neither a `Map` nor a `List` of
+/// maps.
+///
+/// Fields are the sorted union of all keys; each field's type is inferred
+/// from the first non-null value seen across the rows.
+BtoonSchema? deriveBtoonSchema(Object? value) => _deriveSchema(value);
+
 Map<String, dynamic> _stringKeyMap(Map<dynamic, dynamic> map) {
   final result = <String, dynamic>{};
   map.forEach((key, value) {
