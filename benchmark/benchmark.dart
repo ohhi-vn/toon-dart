@@ -802,6 +802,79 @@ Future<void> main(List<String> args) async {
   );
 
   // =========================================================================
+  // 9.5 BTOON binary benchmarks
+  // =========================================================================
+  stdout.writeln('Running BTOON binary benchmarks...');
+  final btoonTabular = TestDataGenerator.generateTabularRows(1000);
+  final btoonTabularJson = jsonEncode(btoonTabular);
+  final btoonTabularEncoded = btoonEncode(btoonTabular);
+  final btoonTabularSchema = btoonEncode(btoonTabular,
+      options: const BtoonEncodeOptions(schemaMode: true));
+
+  await runner.run(
+    name: 'BTOON - Encode (1000 rows, ObjectTable)',
+    benchmark: () => btoonEncode(btoonTabular),
+    dataSize: btoonTabularJson.length,
+    minDuration: minDur,
+  );
+
+  await runner.run(
+    name: 'BTOON - Decode (1000 rows, ObjectTable)',
+    benchmark: () => btoonDecode(btoonTabularEncoded),
+    dataSize: btoonTabularEncoded.length,
+    minDuration: minDur,
+  );
+
+  await runner.run(
+    name: 'BTOON - Encode (1000 rows, schema mode)',
+    benchmark: () =>
+        btoonEncode(btoonTabular,
+            options: const BtoonEncodeOptions(schemaMode: true)),
+    dataSize: btoonTabularJson.length,
+    minDuration: minDur,
+  );
+
+  await runner.run(
+    name: 'BTOON - Decode (1000 rows, schema mode)',
+    benchmark: () => btoonDecode(btoonTabularSchema),
+    dataSize: btoonTabularSchema.length,
+    minDuration: minDur,
+  );
+
+  // TypedArray numeric payload
+  final btoonNumbers = List<num>.generate(100000, (i) => i * 1.5);
+  final btoonNumbersJson = jsonEncode(btoonNumbers);
+  final btoonNumbersEncoded = btoonEncode(btoonNumbers);
+
+  await runner.run(
+    name: 'BTOON - Encode (100k float64 TypedArray)',
+    benchmark: () => btoonEncode(btoonNumbers),
+    dataSize: btoonNumbersJson.length,
+    minDuration: minDurLong,
+  );
+
+  await runner.run(
+    name: 'BTOON - Decode (100k float64 TypedArray)',
+    benchmark: () => btoonDecode(btoonNumbersEncoded),
+    dataSize: btoonNumbersEncoded.length,
+    minDuration: minDurLong,
+  );
+
+  // Session dictionary amortization across messages
+  final btoonSession = BtoonSession();
+  final sessionMessage = {'name': 'Alice', 'email': 'alice@example.com'};
+  final sessionFirst = btoonEncode(sessionMessage,
+      options: BtoonEncodeOptions(session: btoonSession));
+
+  await runner.run(
+    name: 'BTOON - Encode (session, cold dictionary)',
+    benchmark: () => btoonEncode(sessionMessage,
+        options: BtoonEncodeOptions(session: btoonSession)),
+    dataSize: sessionFirst.length,
+    minDuration: minDur,
+  );
+
+  // =========================================================================
   // 10. Schema encode/decode micro-benchmarks
   // =========================================================================
   stdout.writeln('Running schema micro-benchmarks...');
@@ -917,6 +990,28 @@ Future<void> main(List<String> args) async {
   final schemaSavings =
       (1 - schemaEncoded.length / tabular1000Json.length) * 100;
   stdout.writeln('  Schema Savings:   ${schemaSavings.toStringAsFixed(1)}%');
+  stdout.writeln('');
+
+  // BTOON size comparison
+  stdout.writeln('BTOON size comparison (users table, 1000 rows):');
+  stdout.writeln('  JSON size:            ${tabular1000Json.length} bytes');
+  stdout.writeln('  TOON size:            ${tabular1000Encoded.length} bytes');
+  stdout.writeln('  BTOON size:           ${btoonTabularEncoded.length} bytes');
+  stdout.writeln(
+      '  BTOON schema size:  ${btoonTabularSchema.length} bytes');
+  final btoonSavings =
+      (1 - btoonTabularEncoded.length / tabular1000Json.length) * 100;
+  stdout.writeln(
+      '  BTOON Savings:      ${btoonSavings.toStringAsFixed(1)}%');
+  stdout.writeln('');
+
+  // BTOON numeric size comparison
+  stdout.writeln('BTOON size comparison (100k float64 array):');
+  stdout.writeln('  JSON size:   ${btoonNumbersJson.length} bytes');
+  stdout.writeln('  BTOON size:  ${btoonNumbersEncoded.length} bytes');
+  final numericSavings =
+      (1 - btoonNumbersEncoded.length / btoonNumbersJson.length) * 100;
+  stdout.writeln('  Savings:     ${numericSavings.toStringAsFixed(1)}%');
   stdout.writeln('');
 
   // Int-keyed size comparison

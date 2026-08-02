@@ -56,8 +56,11 @@ This project targets Dart 3.0 and above.
 
 All implementations must comply with the [TOON specification](https://github.com/toon-format/spec/blob/main/SPEC.md).
 
+BTOON (the binary codec) must comply with the wire-format spec at
+`btoon_spec/spec.md` in this repository.
+
 Before submitting changes that affect encoding/decoding behavior:
-1. Verify against the official SPEC.md
+1. Verify against the relevant spec (TOON `SPEC.md` or `btoon_spec/spec.md`)
 2. Add tests for the specific spec sections you're implementing
 3. Document any spec version requirements
 

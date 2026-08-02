@@ -45,6 +45,27 @@ export 'src/schema/toon_schema.dart'
 
 // #endregion
 
+// #region BTOON (binary) exports
+
+export 'src/btoon/btoon.dart'
+    show
+        btoonEncode,
+        btoonDecode,
+        BtoonEncodeOptions,
+        BtoonDecodeOptions,
+        BtoonEncodeError,
+        BtoonDecodeError,
+        BtoonBinary,
+        BtoonElementType,
+        BtoonTypedArray,
+        BtoonObjectTable,
+        BtoonSession,
+        BtoonSchema,
+        BtoonSchemaField,
+        BtoonSchemaType;
+
+// #endregion
+
 // #region Stream decoder exports
 
 export 'src/stream/stream_decoder.dart'
