@@ -44,6 +44,12 @@ const int flagStringTable = 0x04;
 /// Envelope flag: a non-empty session dictionary is in use (§11.1).
 const int flagSession = 0x08;
 
+/// Envelope flag: no per-message string table is present (§7.5.1).
+const int flagNoStringTable = 0x10;
+
+/// Envelope flag: schema IDs use UInt16 instead of UInt32 (§7.6.1).
+const int flagSchemaIdUint16 = 0x20;
+
 // Value tags (§8.1).
 const int tagNull = 0x00;
 const int tagFalse = 0x01;

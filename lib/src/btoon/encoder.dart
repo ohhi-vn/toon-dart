@@ -27,6 +27,10 @@ import 'types.dart';
 class _EncodeState {
   final BtoonSession? session;
   final int minTableFreq;
+  final bool useStringTable;
+  final bool typedArrays;
+  final bool objectTables;
+  final bool schemaIdUint16;
 
   final Map<String, int> _freq = {};
   final List<String> _order = [];
@@ -38,7 +42,13 @@ class _EncodeState {
   final List<String> inlineStrings = [];
   final Set<String> _inlineSeen = {};
 
-  _EncodeState({required this.session, required this.minTableFreq});
+  _EncodeState(
+      {required this.session,
+      required this.minTableFreq,
+      required this.useStringTable,
+      required this.typedArrays,
+      required this.objectTables,
+      required this.schemaIdUint16});
 
   /// Collect pass: record a string occurrence (session strings are skipped).
   void recordString(String value) {
@@ -58,6 +68,7 @@ class _EncodeState {
   }
 
   void buildTable() {
+    if (!useStringTable) return;
     for (final value in _order) {
       if ((_freq[value] ?? 0) >= minTableFreq) {
         tableIndex[value] = table.length;
@@ -81,6 +92,10 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
   final state = _EncodeState(
     session: options.session,
     minTableFreq: options.minStringTableFrequency,
+    useStringTable: options.stringTable == BtoonStringTableMode.auto,
+    typedArrays: options.typedArrays,
+    objectTables: options.objectTables,
+    schemaIdUint16: options.schemaIdUint16,
   );
 
   final schema = _resolveSchema(value, options);
@@ -89,7 +104,8 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
   if (schema != null) {
     _encodeSchemaBody(value, schema, state, null);
   } else {
-    _encodeValue(value, state, null);
+    _encodeValue(value, state, null,
+        typedArrays: state.typedArrays, objectTables: state.objectTables);
   }
   state.buildTable();
 
@@ -98,7 +114,8 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
   if (schema != null) {
     _encodeSchemaBody(value, schema, state, bodyWriter);
   } else {
-    _encodeValue(value, state, bodyWriter);
+    _encodeValue(value, state, bodyWriter,
+        typedArrays: state.typedArrays, objectTables: state.objectTables);
   }
   final body = bodyWriter.takeBytes();
 
@@ -112,6 +129,14 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
   if (options.session != null && options.session!.length > 0) {
     flags |= flagSession;
   }
+  if (options.session != null &&
+      options.session!.length > 0 &&
+      state.table.isEmpty) {
+    flags |= flagNoStringTable;
+  }
+  if (schema != null && options.schemaIdUint16) {
+    flags |= flagSchemaIdUint16;
+  }
   writer.writeByte(flags);
   writer.writeByte(0);
   writer.writeByte(0);
@@ -123,10 +148,11 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
       writer.writeUint32(bytes.length);
       writer.writeBytes(bytes);
     }
+    writer.align(8);
   }
 
   if (schema != null) {
-    _writeSchema(writer, schema);
+    _writeSchema(writer, schema, (flags & flagSchemaIdUint16) != 0);
   }
 
   writer.align(8);
@@ -204,7 +230,8 @@ void _writeIntValue(BtoonWriter writer, int value) {
 
 // #region Tagged value encoding
 
-void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer) {
+void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
+    {bool typedArrays = true, bool objectTables = true}) {
   final isCollect = writer == null;
 
   if (value == null) {
@@ -281,27 +308,30 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer) {
       return;
     }
     final intType = _allInts(value) ? bestIntElementType(value) : null;
-    if (intType != null) {
+    if (intType != null && typedArrays) {
       if (!isCollect) {
         _writeTypedArray(
           writer,
           value.cast<num>(),
-          intType == BtoonElementType.uint64
-              ? BtoonElementType.int64
-              : intType,
+          intType == BtoonElementType.uint64 ? BtoonElementType.int64 : intType,
         );
       }
       return;
     }
     if (_allDoubles(value)) {
-      final doubleType =
-          value.every((e) => isLosslessFloat32(e as double))
-              ? BtoonElementType.float32
-              : BtoonElementType.float64;
-      if (!isCollect) _writeTypedArray(writer, value.cast<num>(), doubleType);
-      return;
+      final doubleType = value.every((e) => isLosslessFloat32(e as double))
+          ? BtoonElementType.float32
+          : BtoonElementType.float64;
+      if (!isCollect && typedArrays) {
+        _writeTypedArray(writer, value.cast<num>(), doubleType);
+      }
+      if (isCollect && !typedArrays) {
+        // Continue through the general tagged-array path below.
+      } else if (typedArrays) {
+        return;
+      }
     }
-    if (isObjectTable(value)) {
+    if (objectTables && isObjectTable(value)) {
       _encodeObjectTable(objectTableRows(value), state, writer);
       return;
     }
@@ -310,7 +340,8 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer) {
       writer.writeUint32(value.length);
     }
     for (final item in value) {
-      _encodeValue(item, state, writer);
+      _encodeValue(item, state, writer,
+          typedArrays: state.typedArrays, objectTables: state.objectTables);
     }
     return;
   }
@@ -328,7 +359,8 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer) {
     }
     for (final key in keys) {
       _emitString(key, state, writer);
-      _encodeValue(value[key], state, writer);
+      _encodeValue(value[key], state, writer,
+          typedArrays: state.typedArrays, objectTables: state.objectTables);
     }
     return;
   }
@@ -404,12 +436,18 @@ void _encodeObjectTable(
         rows,
       );
     }
+    if (state.session != null &&
+        state.session!.length > 0 &&
+        state.session!.indexOf(field) == null) {
+      throw BtoonEncodeError(
+          'ObjectTable column names must be in the session dictionary', field);
+    }
     _emitString(field, state, writer);
     if (!isCollect) {
       writer.writeByte(elementTagOf(columnType));
-      final padLen = (columnType.size -
-              ((writer.length + 1) % columnType.size)) %
-          columnType.size;
+      final padLen =
+          (columnType.size - ((writer.length + 1) % columnType.size)) %
+              columnType.size;
       writer.writeByte(padLen);
       writer.writePadding(padLen);
       writeRawNumericData(writer, _columnValues(rows, field), columnType);
@@ -425,8 +463,15 @@ List<num> _columnValues(List<Map<String, dynamic>> rows, String field) {
 
 // #region Schema
 
-void _writeSchema(BtoonWriter writer, BtoonSchema schema) {
-  writer.writeUint32(schema.id);
+void _writeSchema(BtoonWriter writer, BtoonSchema schema, bool idUint16) {
+  if (idUint16) {
+    if (schema.id < 0 || schema.id > 0xFFFF) {
+      throw BtoonEncodeError('schema id does not fit UInt16', schema.id);
+    }
+    writer.writeUint16(schema.id);
+  } else {
+    writer.writeUint32(schema.id);
+  }
   final name = utf8.encode(schema.name);
   writer.writeUint32(name.length);
   writer.writeBytes(name);
@@ -446,7 +491,13 @@ void _encodeSchemaBody(
   BtoonWriter? writer,
 ) {
   final isCollect = writer == null;
-  if (!isCollect) writer.writeUint32(schema.id);
+  if (!isCollect) {
+    if (state.schemaIdUint16) {
+      writer.writeUint16(schema.id);
+    } else {
+      writer.writeUint32(schema.id);
+    }
+  }
 
   if (value is Map) {
     _encodeSchemaFields(_stringKeyMap(value), schema, state, writer);
@@ -527,7 +578,8 @@ void _encodeSchemaFieldValue(
       }
     case elementArray:
     case elementObject:
-      _encodeValue(value, state, writer);
+      _encodeValue(value, state, writer,
+          typedArrays: state.typedArrays, objectTables: state.objectTables);
     case elementFloat32:
     case elementFloat64:
       if (value is! num) {

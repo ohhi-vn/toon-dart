@@ -57,7 +57,8 @@ void main() {
     test('infinity and NaN choose correct width', () {
       expect(btoonEncode(double.infinity)[8], 0x05); // float32
       expect(btoonEncode(double.negativeInfinity)[8], 0x05);
-      expect(btoonEncode(double.nan)[8], 0x06); // float64 (not float32-lossless)
+      expect(
+          btoonEncode(double.nan)[8], 0x06); // float64 (not float32-lossless)
       final nan = btoonDecode(btoonEncode(double.nan)) as double;
       expect(nan.isNaN, isTrue);
     });
@@ -174,8 +175,8 @@ void main() {
 
     test('uint64 is not a valid TypedArray element type', () {
       expect(
-        () => btoonEncode(BtoonTypedArray(const [1],
-            elementType: BtoonElementType.uint64)),
+        () => btoonEncode(
+            BtoonTypedArray(const [1], elementType: BtoonElementType.uint64)),
         throwsA(isA<BtoonEncodeError>()),
       );
     });
@@ -188,14 +189,14 @@ void main() {
     });
 
     test('empty forced TypedArray round-trips', () {
-      final intBytes = btoonEncode(BtoonTypedArray(const [],
-          elementType: BtoonElementType.int32));
+      final intBytes = btoonEncode(
+          BtoonTypedArray(const [], elementType: BtoonElementType.int32));
       expect(intBytes[8], 0x0C); // tagTypedArray
       expect(intBytes[9], 0x04); // int32
       expect(btoonDecode(intBytes), isEmpty);
 
-      final floatBytes = btoonEncode(BtoonTypedArray(const [],
-          elementType: BtoonElementType.float64));
+      final floatBytes = btoonEncode(
+          BtoonTypedArray(const [], elementType: BtoonElementType.float64));
       expect(floatBytes[9], 0x08); // float64
       expect(btoonDecode(floatBytes), isEmpty);
     });
@@ -286,8 +287,8 @@ void main() {
       final bytes = btoonEncode({'a': 'hello', 'b': 'world'},
           options: BtoonEncodeOptions(session: session, growSession: false));
       expect(bytes[5] & 0x08, 0x08); // session flag
-      final decoded = btoonDecode(bytes,
-          options: BtoonDecodeOptions(session: session));
+      final decoded =
+          btoonDecode(bytes, options: BtoonDecodeOptions(session: session));
       expect(decoded, {'a': 'hello', 'b': 'world'});
     });
 
@@ -298,8 +299,8 @@ void main() {
       }
       final bytes = btoonEncode({'a': 's99'},
           options: BtoonEncodeOptions(session: session, growSession: false));
-      final decoded = btoonDecode(bytes,
-          options: BtoonDecodeOptions(session: session));
+      final decoded =
+          btoonDecode(bytes, options: BtoonDecodeOptions(session: session));
       expect(decoded, {'a': 's99'});
     });
 
@@ -355,7 +356,10 @@ void main() {
         const BtoonSchemaField('tags', type: BtoonSchemaType.array),
         const BtoonSchemaField('meta', type: BtoonSchemaType.object),
       ]);
-      final value = {'tags': ['x', 'y'], 'meta': {'k': 1}};
+      final value = {
+        'tags': ['x', 'y'],
+        'meta': {'k': 1}
+      };
       final decoded = btoonDecode(
         btoonEncode(value,
             options: BtoonEncodeOptions(schema: schema, schemaMode: true)),

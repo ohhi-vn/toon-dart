@@ -18,6 +18,9 @@ class _DecodeState {
   final bool growSession;
   final bool preserveBinary;
   final bool preserveTypedArrays;
+  final int maxDepth;
+  final bool schemaIdUint16;
+  final bool sessionActive;
 
   final List<String> inlineStrings = [];
   final Set<String> _inlineSeen = {};
@@ -29,6 +32,9 @@ class _DecodeState {
     required this.growSession,
     required this.preserveBinary,
     required this.preserveTypedArrays,
+    required this.maxDepth,
+    required this.schemaIdUint16,
+    required this.sessionActive,
   });
 
   void recordInlineString(String value) {
@@ -70,6 +76,12 @@ Object? btoonDecodeBytes(Uint8List bytes, BtoonDecodeOptions options) {
     throw BtoonDecodeError('unsupported BTOON version $version', 4);
   }
   final flags = reader.readByte();
+  if ((flags & flagStringTable) != 0 && (flags & flagNoStringTable) != 0) {
+    throw const BtoonDecodeError(
+      'string-table and no-string-table flags are mutually exclusive',
+      5,
+    );
+  }
   if (reader.readByte() != 0 || reader.readByte() != 0) {
     throw const BtoonDecodeError('non-zero reserved envelope bytes', 6);
   }
@@ -82,12 +94,13 @@ Object? btoonDecodeBytes(Uint8List bytes, BtoonDecodeOptions options) {
       final length = reader.readUint32();
       messageTable.add(_readUtf8(reader, length));
     }
+    _skipAlignedPadding(reader);
   }
 
   BtoonSchema? schema;
   final hasEmbeddedSchema = (flags & flagHasSchema) != 0;
   if (hasEmbeddedSchema) {
-    schema = _readSchema(reader);
+    schema = _readSchema(reader, (flags & flagSchemaIdUint16) != 0);
   }
 
   reader.skipPaddingTo(8);
@@ -99,6 +112,9 @@ Object? btoonDecodeBytes(Uint8List bytes, BtoonDecodeOptions options) {
     growSession: options.growSession,
     preserveBinary: options.preserveBinary,
     preserveTypedArrays: options.preserveTypedArrays,
+    maxDepth: options.maxDepth,
+    schemaIdUint16: (flags & flagSchemaIdUint16) != 0,
+    sessionActive: (flags & flagSession) != 0,
   );
 
   final isSchemaMode = hasEmbeddedSchema || options.schema != null;
@@ -112,7 +128,8 @@ Object? btoonDecodeBytes(Uint8List bytes, BtoonDecodeOptions options) {
 
 // #region Tagged value decoding
 
-Object? _decodeValue(_DecodeState state) {
+Object? _decodeValue(_DecodeState state, {int depth = 0}) {
+  _checkDepth(state, depth);
   final reader = state.reader;
   final tag = reader.readByte();
   switch (tag) {
@@ -141,7 +158,7 @@ Object? _decodeValue(_DecodeState state) {
       final list = <Object?>[];
       list.length = count;
       for (var i = 0; i < count; i++) {
-        list[i] = _decodeValue(state);
+        list[i] = _decodeValue(state, depth: depth + 1);
       }
       return list;
     case tagObject:
@@ -149,7 +166,7 @@ Object? _decodeValue(_DecodeState state) {
       final map = <String, dynamic>{};
       for (var i = 0; i < count; i++) {
         final key = _readStringValue(state);
-        map[key] = _decodeValue(state);
+        map[key] = _decodeValue(state, depth: depth + 1);
       }
       return map;
     case tagTypedArray:
@@ -250,7 +267,8 @@ Object? _readTypedArray(_DecodeState state) {
 int _readPadLen(BtoonReader reader) {
   final padLen = reader.readByte();
   if (padLen > 7) {
-    throw BtoonDecodeError('invalid padding length $padLen', reader.position - 1);
+    throw BtoonDecodeError(
+        'invalid padding length $padLen', reader.position - 1);
   }
   return padLen;
 }
@@ -267,7 +285,21 @@ Object? _readObjectTable(_DecodeState state) {
   final fields = <String>[];
   final columns = <List<num>>[];
   for (var f = 0; f < fieldCount; f++) {
-    fields.add(_readStringValue(state));
+    final nameTag = state.reader.readByte();
+    if (state.sessionActive && nameTag != tagStringRef) {
+      throw BtoonDecodeError(
+        'ObjectTable column names must use StringRef with a session dictionary',
+        state.reader.position - 1,
+      );
+    }
+    if (nameTag == tagStringRef) {
+      fields.add(_resolveStringRef(state, _readIntValue(state.reader)));
+    } else if (nameTag == tagString) {
+      fields.add(_readInlineString(state));
+    } else {
+      throw BtoonDecodeError(
+          'expected a string column name', state.reader.position - 1);
+    }
     final type = elementTypeOf(reader.readByte());
     reader.skip(_readPadLen(reader));
     columns.add(readRawNumericData(reader, type, rowCount));
@@ -296,7 +328,8 @@ Object? _decodeSchemaBody(_DecodeState state, BtoonSchema? schema) {
     );
   }
   final reader = state.reader;
-  final schemaId = reader.readUint32();
+  final schemaId =
+      state.schemaIdUint16 ? reader.readUint16() : reader.readUint32();
   if (schemaId != schema.id) {
     throw BtoonDecodeError(
       'schema id $schemaId does not match "${schema.name}" (id ${schema.id})',
@@ -312,7 +345,8 @@ Object? _decodeSchemaBody(_DecodeState state, BtoonSchema? schema) {
   return rows.length == 1 ? rows.first : rows;
 }
 
-Map<String, dynamic> _decodeSchemaFields(_DecodeState state, BtoonSchema schema) {
+Map<String, dynamic> _decodeSchemaFields(
+    _DecodeState state, BtoonSchema schema) {
   final map = <String, dynamic>{};
   for (final field in schema.fields) {
     map[field.name] = _decodeSchemaFieldValue(state, field);
@@ -380,8 +414,8 @@ Object? _readSchemaNumeric(BtoonReader reader, int code) {
 
 // #region Schema parsing
 
-BtoonSchema _readSchema(BtoonReader reader) {
-  final id = reader.readUint32();
+BtoonSchema _readSchema(BtoonReader reader, bool idUint16) {
+  final id = idUint16 ? reader.readUint16() : reader.readUint32();
   final nameLength = reader.readUint32();
   final name = _readUtf8(reader, nameLength);
   final count = reader.readUint32();
@@ -401,11 +435,24 @@ BtoonSchema _readSchema(BtoonReader reader) {
 
 // #endregion
 
+void _checkDepth(_DecodeState state, int depth) {
+  if (depth > state.maxDepth) {
+    throw BtoonDecodeError(
+        'maximum nesting depth exceeded', state.reader.position);
+  }
+}
+
+void _skipAlignedPadding(BtoonReader reader) {
+  final count = (8 - (reader.position % 8)) % 8;
+  reader.skipZeroPadding(count);
+}
+
 String _readUtf8(BtoonReader reader, int length) {
   final bytes = reader.readBytes(length);
   try {
     return utf8.decode(bytes);
   } on FormatException catch (e) {
-    throw BtoonDecodeError('invalid UTF-8 string: ${e.message}', reader.position);
+    throw BtoonDecodeError(
+        'invalid UTF-8 string: ${e.message}', reader.position);
   }
 }

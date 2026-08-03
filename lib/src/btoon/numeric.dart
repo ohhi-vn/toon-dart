@@ -116,9 +116,7 @@ BtoonElementType bestNumericElementType(List<num> values) {
     }
     // uint64 is a valid ObjectTable column selector but not a valid
     // TypedArray selector (§12); the values fit int64 anyway.
-    return type == BtoonElementType.uint64
-        ? BtoonElementType.int64
-        : type;
+    return type == BtoonElementType.uint64 ? BtoonElementType.int64 : type;
   }
   if (allDouble) {
     for (final v in values) {

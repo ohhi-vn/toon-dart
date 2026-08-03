@@ -188,7 +188,13 @@ void main() {
     });
 
     test('mixed-type lists are plain arrays', () {
-      expectRoundTrip([1, 'two', true, null, {'three': 3}]);
+      expectRoundTrip([
+        1,
+        'two',
+        true,
+        null,
+        {'three': 3}
+      ]);
       expectRoundTrip([1, 2, 'three']);
     });
 
@@ -208,7 +214,13 @@ void main() {
   group('maps', () {
     test('round-trip', () {
       expectRoundTrip({'name': 'Alice', 'age': 30});
-      expectRoundTrip({'a': 1, 'b': {'c': [1, 2, 3], 'd': null}});
+      expectRoundTrip({
+        'a': 1,
+        'b': {
+          'c': [1, 2, 3],
+          'd': null
+        }
+      });
     });
 
     test('keys are sorted deterministically', () {
@@ -237,8 +249,8 @@ void main() {
 
     test('unsupported host types fail to encode', () {
       expect(() => btoonEncode(Object()), throwsA(isA<BtoonEncodeError>()));
-      expect(() => btoonEncode([1, Object()]),
-          throwsA(isA<BtoonEncodeError>()));
+      expect(
+          () => btoonEncode([1, Object()]), throwsA(isA<BtoonEncodeError>()));
       expect(() => btoonEncode({'k': DateTime.now()}),
           throwsA(isA<BtoonEncodeError>()));
     });
@@ -278,8 +290,8 @@ void main() {
 
   group('TypedArray / ObjectTable wrappers', () {
     test('BtoonTypedArray with forced element type', () {
-      final bytes = btoonEncode(BtoonTypedArray([1, 2, 3],
-          elementType: BtoonElementType.int16));
+      final bytes = btoonEncode(
+          BtoonTypedArray([1, 2, 3], elementType: BtoonElementType.int16));
       expect(bytes[8], 0x0C); // tagTypedArray
       expect(bytes[9], 0x02); // int16
       final decoded = btoonDecode(bytes);
@@ -288,8 +300,8 @@ void main() {
 
     test('BtoonTypedArray forced type overflow fails', () {
       expect(
-        () => btoonEncode(BtoonTypedArray([1000],
-            elementType: BtoonElementType.int8)),
+        () => btoonEncode(
+            BtoonTypedArray([1000], elementType: BtoonElementType.int8)),
         throwsA(isA<BtoonEncodeError>()),
       );
     });
@@ -303,7 +315,8 @@ void main() {
 
     test('preserveTypedArrays returns BtoonTypedArray', () {
       final decoded = btoonDecode(
-        btoonEncode(BtoonTypedArray([1, 2], elementType: BtoonElementType.int32)),
+        btoonEncode(
+            BtoonTypedArray([1, 2], elementType: BtoonElementType.int32)),
         options: const BtoonDecodeOptions(preserveTypedArrays: true),
       );
       expect(decoded, isA<BtoonTypedArray>());
@@ -400,15 +413,15 @@ void main() {
     test('shared session dedups across messages', () {
       final session = BtoonSession();
       final value = {'name': 'Alice', 'age': 30};
-      final first = btoonEncode(value,
-          options: BtoonEncodeOptions(session: session));
-      final second = btoonEncode(value,
-          options: BtoonEncodeOptions(session: session));
+      final first =
+          btoonEncode(value, options: BtoonEncodeOptions(session: session));
+      final second =
+          btoonEncode(value, options: BtoonEncodeOptions(session: session));
       // Second message reuses "Alice" from the session → smaller.
       expect(second.length, lessThan(first.length));
 
-      final decoded = btoonDecode(second,
-          options: BtoonDecodeOptions(session: session));
+      final decoded =
+          btoonDecode(second, options: BtoonDecodeOptions(session: session));
       expect(decoded, value);
     });
 
@@ -422,17 +435,19 @@ void main() {
 
     test('decoding a session ref without a session fails', () {
       final session = BtoonSession();
-      final first = btoonEncode({'a': 'hello'}, options: BtoonEncodeOptions(session: session));
-      btoonEncode({'b': 'hello'}, options: BtoonEncodeOptions(session: session));
-      final second = btoonEncode({'b': 'hello'}, options: BtoonEncodeOptions(session: session));
+      final first = btoonEncode({'a': 'hello'},
+          options: BtoonEncodeOptions(session: session));
+      btoonEncode({'b': 'hello'},
+          options: BtoonEncodeOptions(session: session));
+      final second = btoonEncode({'b': 'hello'},
+          options: BtoonEncodeOptions(session: session));
       // A message that references session strings is smaller than one that
       // embeds them inline.
       expect(second.length, lessThan(first.length)); // sanity
       // A message that references a session string cannot decode without the session.
       final bytes = btoonEncode({'a': 'hello'},
           options: BtoonEncodeOptions(session: session));
-      expect(() => btoonDecode(bytes),
-          throwsA(isA<BtoonDecodeError>()));
+      expect(() => btoonDecode(bytes), throwsA(isA<BtoonDecodeError>()));
       expect(btoonDecode(bytes, options: BtoonDecodeOptions(session: session)),
           {'a': 'hello'});
     });
@@ -575,9 +590,13 @@ void main() {
     });
 
     test('typed array data offset is aligned in nested structures', () {
-      final bytes = btoonEncode({'values': [1.5, 2.5]});
+      final bytes = btoonEncode({
+        'values': [1.5, 2.5]
+      });
       final decoded = btoonDecode(bytes);
-      expect(decoded, {'values': [1.5, 2.5]});
+      expect(decoded, {
+        'values': [1.5, 2.5]
+      });
     });
   });
 }

@@ -210,6 +210,17 @@ class BtoonReader {
     }
   }
 
+  /// Skips and validates explicit zero padding.
+  void skipZeroPadding(int count) {
+    _check(count);
+    for (var i = 0; i < count; i++) {
+      if (bytes[offset + i] != 0) {
+        throw BtoonDecodeError('non-zero alignment padding', offset + i);
+      }
+    }
+    offset += count;
+  }
+
   void _check(int count) {
     if (offset + count > limit) {
       throw BtoonDecodeError(
