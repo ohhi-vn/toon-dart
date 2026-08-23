@@ -684,6 +684,92 @@ List<JsonPrimitive> mapRowValuesToPrimitives(List<String> values) {
   return values.map((v) => parsePrimitiveToken(v)).toList();
 }
 
+/// Parses delimited values directly into primitives in a single pass.
+///
+/// Equivalent to `parseDelimitedValues(...).map(parsePrimitiveToken)` but
+/// without materializing an intermediate list of token strings: each cell is
+/// sliced once from [input] after computing its trimmed bounds.
+///
+/// Semantics match the two-step pipeline exactly:
+/// - tokens are space-trimmed (plus trailing CR) before primitive parsing,
+/// - a trailing delimiter yields a trailing empty-string token,
+/// - empty or whitespace-only input yields an empty list.
+List<JsonPrimitive> parseDelimitedPrimitives(String input, String delimiter) {
+  final primitives = <JsonPrimitive>[];
+  final delimCode = delimiter.length == 1 ? delimiter.codeUnitAt(0) : -1;
+  final delimLen = delimiter.length;
+  final len = input.length;
+  int start = 0;
+  bool inQuotes = false;
+  bool sawDelimiter = false;
+
+  // Emits the token spanning [tokenStart, tokenEnd) after space-trimming.
+  // The final token follows the historical rule: it is dropped when it
+  // trims to empty and no delimiter was ever seen.
+  void emit(int tokenStart, int tokenEnd, {required bool isFinal}) {
+    var s = tokenStart;
+    var e = tokenEnd;
+    while (s < e && input.codeUnitAt(s) == 0x20) {
+      s++;
+    }
+    while (e > s) {
+      final c = input.codeUnitAt(e - 1);
+      if (c != 0x20 && c != 0x0D) break;
+      e--;
+    }
+    if (!isFinal || e > s || sawDelimiter) {
+      primitives.add(s == 0 && e == len
+          ? parsePrimitiveToken(input)
+          : parsePrimitiveToken(input.substring(s, e)));
+    }
+  }
+
+  int i = 0;
+  while (i < len) {
+    final c = input.codeUnitAt(i);
+
+    if (c == 0x5C && inQuotes && i + 1 < len) {
+      // '\' — escape sequence inside a quoted section
+      i += 2;
+      continue;
+    }
+
+    if (c == 0x22) {
+      // '"'
+      inQuotes = !inQuotes;
+      i++;
+      continue;
+    }
+
+    var isDelim = false;
+    if (!inQuotes) {
+      if (delimCode != -1) {
+        isDelim = c == delimCode;
+      } else if (i + delimLen <= len) {
+        isDelim = true;
+        for (var d = 0; d < delimLen; d++) {
+          if (input.codeUnitAt(i + d) != delimiter.codeUnitAt(d)) {
+            isDelim = false;
+            break;
+          }
+        }
+      }
+    }
+
+    if (isDelim) {
+      emit(start, i, isFinal: false);
+      sawDelimiter = true;
+      i += delimLen;
+      start = i;
+      continue;
+    }
+    i++;
+  }
+
+  emit(start, len, isFinal: true);
+  return primitives;
+}
+
 // #endregion
 
 // #region Primitive Token Parsing (HOTTEST PATH)

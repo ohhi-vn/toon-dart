@@ -25,28 +25,14 @@ class LineWriter {
 
   bool _hasContent = false;
 
-  /// Creates a LineWriter with optional pre-estimated capacity.
+  /// Creates a LineWriter.
   ///
   /// [indentSize] Number of spaces per indent level (must be > 0)
-  /// [estimatedCapacity] Estimated final string length in characters.
-  ///   Providing a reasonable estimate avoids StringBuffer reallocation.
-  ///   A rough estimate is much better than no estimate.
-  ///
-  /// Estimation tips:
-  /// - Simple object: ~50-200 chars per field
-  /// - Tabular array: header (~50) + rows (~30-100 per row)
-  /// - Nested object: ~100-500 chars per level
-  LineWriter(int indentSize, {int estimatedCapacity = 256})
+  LineWriter(int indentSize)
       : _indentationString = ' ' * indentSize,
         _buffer = StringBuffer() {
     if (indentSize <= 0) {
       throw ArgumentError('indentSize must be positive');
-    }
-    // Pre-allocate StringBuffer capacity by writing and clearing
-    // This avoids 2-3x reallocation overhead during encoding
-    if (estimatedCapacity > 1024) {
-      _buffer.write(' ' * estimatedCapacity);
-      _buffer.clear();
     }
     // Pre-compute indent cache up to depth 20
     for (int i = 1; i <= 20; i++) {

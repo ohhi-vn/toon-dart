@@ -120,31 +120,28 @@ bool isArrayOfObjects(JsonArray value) {
 /// set of keys, and every sub-column is uniform-primitive or nested-uniform.
 bool _isNestedUniform(List<JsonValue> values) {
   if (values.isEmpty) return true;
-  final first = values[0] as JsonObject?;
-  if (first == null || first.isEmpty) return false;
+  final first = values[0];
+  if (!isJsonObject(first)) return false;
+  final firstObj = first as JsonObject;
+  if (firstObj.isEmpty) return false;
+  final firstKeys = firstObj.keys.toList();
 
-  final firstKeys = first.keys.toList();
-
+  // All rows must be non-empty objects sharing the first row's key set.
   for (final val in values) {
     if (!isJsonObject(val)) return false;
     final obj = val as JsonObject;
-    if (obj.isEmpty) return false;
-    if (obj.length != firstKeys.length) return false;
-
-    // Must have all the same keys (key set check, order may vary)
+    if (obj.isEmpty || obj.length != firstKeys.length) return false;
     for (final key in firstKeys) {
       if (!obj.containsKey(key)) return false;
     }
+  }
 
-    // Check each sub-column recursively
-    for (final key in firstKeys) {
-      final subValues = values.map((v) {
-        if (v == null) return null;
-        if (v is! JsonObject) return null;
-        return v[key];
-      }).toList();
-      if (!_isUniformColumn(subValues)) return false;
-    }
+  // Each sub-column is checked exactly once — O(rows x keys x depth).
+  for (final key in firstKeys) {
+    final subValues = <JsonValue>[
+      for (final v in values) (v as JsonObject)[key],
+    ];
+    if (!_isUniformColumn(subValues)) return false;
   }
 
   return true;
@@ -188,25 +185,33 @@ List<TabularField> _detectFields(JsonObject obj) {
 }
 
 /// Extracts tabular fields from a list of objects, detecting nested uniformity.
-/// Returns null if the rows are not tabular.
-List<TabularField>? extractTabularFields(List<JsonObject> rows) {
+/// Returns null if the rows are not all objects or not tabular.
+///
+/// Accepts untyped lists so callers can probe tabularity with a single
+/// pass instead of pre-scanning with an `every(isJsonObject)` check.
+List<TabularField>? extractTabularFields(List<Object?> rows) {
   if (rows.isEmpty) return null;
 
   final firstRow = rows[0];
+  if (firstRow is! JsonObject) return null;
   final firstKeys = firstRow.keys.toList();
   if (firstKeys.isEmpty) return null;
 
-  // Check that all rows have the same key set
+  // Check that all rows are objects with the same key set.
   for (final row in rows) {
+    if (row is! JsonObject) return null;
     if (row.length != firstKeys.length) return null;
     for (final key in firstKeys) {
       if (!row.containsKey(key)) return null;
     }
   }
 
+  // Safe to cast lazily now that every row is validated.
+  final objects = rows.cast<JsonObject>();
+
   // Check each column is uniform
   for (final key in firstKeys) {
-    final column = rows.map((r) => r[key]).toList();
+    final column = <JsonValue>[for (final r in objects) r[key]];
     if (!_isUniformColumn(column)) return null;
   }
 

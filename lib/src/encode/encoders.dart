@@ -13,24 +13,12 @@ import 'writer.dart';
 // #region Encode normalized JsonValue
 
 /// Encodes a JsonValue to TOON format.
-///
-/// Optimized: pre-estimates buffer capacity to avoid reallocation.
-/// Uses [LineWriter.estimateFromMap] for a rough size estimate,
-/// which is much better than dynamic growth (2-3x reallocation overhead).
 String encodeValue(JsonValue value, ResolvedEncodeOptions options) {
   if (isJsonPrimitive(value)) {
     return encodePrimitive(value, options.delimiter);
   }
 
-  // Pre-estimate buffer capacity for better performance
-  final estimatedCapacity = isJsonObject(value)
-      ? LineWriter.estimateFromMap(value as JsonObject)
-      : isJsonArray(value)
-          ? _estimateArrayCapacity(value as JsonArray)
-          : 256;
-
-  final writer =
-      LineWriter(options.indent, estimatedCapacity: estimatedCapacity);
+  final writer = LineWriter(options.indent);
 
   if (isJsonArray(value)) {
     encodeArray(null, value as JsonArray, writer, 0, options);
@@ -46,18 +34,6 @@ String encodeValue(JsonValue value, ResolvedEncodeOptions options) {
   }
 
   return writer.toString();
-}
-
-/// Estimates buffer capacity for an array value.
-int _estimateArrayCapacity(JsonArray arr) {
-  if (arr.isEmpty) return 64;
-  final first = arr.first;
-  if (first is Map<String, dynamic>) {
-    // Tabular estimate: header + rows
-    return 64 + arr.length * (first.length * 16 + 16);
-  }
-  // Primitive or mixed estimate
-  return 64 + arr.length * 24;
 }
 
 // #endregion
@@ -159,15 +135,16 @@ void encodeArray(
     }
   }
 
-  // Array of objects (tabular format when eligible)
-  if (isArrayOfObjects(value)) {
+  // Array of objects (tabular format when eligible).
+  // extractTabularFields validates object-ness and uniformity in one pass.
+  final tabularFields = extractTabularFields(value);
+  if (tabularFields != null) {
     final objects = value.cast<JsonObject>();
-    final header = extractTabularHeader(objects);
     // §9.3: Keyless tabular headers (without key prefix) are valid only at
     // document root (depth 0). In list-item position, use list form instead.
-    if (header != null && (key != null || depth == 0)) {
+    if (key != null || depth == 0) {
       encodeArrayOfObjectsAsTabular(
-          key, objects, header, writer, depth, options);
+          key, objects, tabularFields, writer, depth, options);
     } else {
       encodeMixedArrayAsListItems(key, value, writer, depth, options);
     }
@@ -333,34 +310,59 @@ String _formatTabularArrayHeader(
 /// Pre-encodes tabular rows into strings.
 ///
 /// This is the inlined hot path for tabular row encoding.
-/// Each row is encoded into a string with delimited values,
-/// avoiding per-row StringBuffer allocation by reusing a
-/// single buffer that is cleared between rows.
-///
-/// Performance: ~1.5-2x faster than creating a new StringBuffer
-/// per row due to reduced allocation overhead.
+/// Each row is encoded into a string with delimited values.
+/// A single buffer is reused across rows, and leaf cells are written
+/// directly to the buffer — no intermediate cell list is materialized.
 List<String> _preEncodeTabularRows(
   List<JsonObject> rows,
   List<TabularField> fields,
   String delimiter,
 ) {
   final result = <String>[];
-  // Reuse a single buffer for all rows to reduce allocation
   final buffer = StringBuffer();
 
   for (final row in rows) {
     buffer.clear();
-    final cells = _flattenValues(row, fields);
-    for (int i = 0; i < cells.length; i++) {
-      if (i > 0) {
-        buffer.write(delimiter);
-      }
-      buffer.write(encodePrimitive(cells[i], delimiter));
-    }
+    _writeRowCells(buffer, row, fields, delimiter);
     result.add(buffer.toString());
   }
 
   return result;
+}
+
+/// Writes a row's leaf cells into [buffer] in depth-first field order,
+/// separated by [delimiter]. Non-primitive leaf values coerce to null,
+/// matching [_flattenValues].
+void _writeRowCells(
+  StringBuffer buffer,
+  JsonObject obj,
+  List<TabularField> fields,
+  String delimiter,
+) {
+  var first = true;
+  for (final field in fields) {
+    final nested = field.nestedFields;
+    if (nested != null) {
+      final value = obj[field.name];
+      if (value is JsonObject) {
+        if (!first) buffer.write(delimiter);
+        first = false;
+        _writeRowCells(buffer, value, nested, delimiter);
+        continue;
+      }
+      // Nested group without an object value: emit nulls for each leaf.
+      for (var i = 0; i < nested.length; i++) {
+        if (!first) buffer.write(delimiter);
+        first = false;
+        buffer.write(encodePrimitive(null, delimiter));
+      }
+      continue;
+    }
+    if (!first) buffer.write(delimiter);
+    first = false;
+    final value = obj[field.name];
+    buffer.write(encodePrimitive(isJsonPrimitive(value) ? value : null, delimiter));
+  }
 }
 
 /// Extracts the tabular header from an array of objects.

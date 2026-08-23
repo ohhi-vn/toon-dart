@@ -91,14 +91,31 @@ BtoonElementType? bestIntElementType(List<dynamic> values) {
   return BtoonElementType.int64;
 }
 
+/// Returns the smallest lossless element type covering the inclusive
+/// integer range [min], [max], or null when out of the `int64` range.
+BtoonElementType? bestIntElementTypeForRange(int min, int max) {
+  if (!isInInt64Range(min) || !isInInt64Range(max)) return null;
+  if (min >= 0) {
+    if (max <= 0xFF) return BtoonElementType.uint8;
+    if (max <= 0xFFFF) return BtoonElementType.uint16;
+    if (max <= 0xFFFFFFFF) return BtoonElementType.uint32;
+    return BtoonElementType.uint64;
+  }
+  if (min >= -128 && max <= 127) return BtoonElementType.int8;
+  if (min >= -32768 && max <= 32767) return BtoonElementType.int16;
+  if (min >= -2147483648 && max <= 2147483647) {
+    return BtoonElementType.int32;
+  }
+  return BtoonElementType.int64;
+}
+
 /// Returns the best element type for a list of values.
 ///
 /// * all `int` → smallest signed/unsigned integer type that fits;
 /// * all `double` → `float32` if every value survives a float32 round-trip,
 ///   otherwise `float64`;
 /// * mixed `num` → `float64`.
-BtoonElementType bestNumericElementType(List<num> values) {
-  var allInt = true;
+BtoonElementType bestNumericElementType(List<num> values) {  var allInt = true;
   var allDouble = true;
   for (final v in values) {
     if (v is int) {
@@ -175,6 +192,8 @@ List<String> objectTableFields(List<Map<String, dynamic>> rows) {
 /// The column kind for field [field] across [rows]:
 /// returns an element type when the column is a homogeneous numeric column,
 /// or null for a general (tagged) column.
+///
+/// Values are inspected in place — no intermediate column list is built.
 BtoonElementType? columnElementType(
   List<Map<String, dynamic>> rows,
   String field,
@@ -187,9 +206,7 @@ BtoonElementType? columnElementType(
     final value = row[field];
     if (value == null) {
       sawNull = true;
-      continue;
-    }
-    if (value is int) {
+    } else if (value is int) {
       sawInt = true;
     } else if (value is double) {
       sawDouble = true;
@@ -199,7 +216,21 @@ BtoonElementType? columnElementType(
   }
   if (sawNull) return null;
   if (sawInt && !sawDouble) {
-    return bestIntElementType(rows.map((r) => r[field] as int).toList());
+    var min = 0;
+    var max = 0;
+    var first = true;
+    for (final row in rows) {
+      final v = row[field] as int;
+      if (first) {
+        min = max = v;
+        first = false;
+      } else if (v < min) {
+        min = v;
+      } else if (v > max) {
+        max = v;
+      }
+    }
+    return bestIntElementTypeForRange(min, max);
   }
   if (sawDouble && !sawInt) {
     for (final row in rows) {
@@ -210,6 +241,64 @@ BtoonElementType? columnElementType(
     return BtoonElementType.float32;
   }
   return null;
+}
+
+/// Pre-computed ObjectTable layout.
+///
+/// Rows are copied once from the source list and the field order plus
+/// per-column element types are resolved once, so encoding never has to
+/// re-validate or re-scan user data.
+class ObjectTablePlan {
+  /// Rows as `Map<String, dynamic>`.
+  final List<Map<String, dynamic>> rows;
+
+  /// Sorted union of all keys across [rows].
+  final List<String> fields;
+
+  /// Element type per field in [fields].
+  final Map<String, BtoonElementType> columnTypes;
+
+  const ObjectTablePlan({
+    required this.rows,
+    required this.fields,
+    required this.columnTypes,
+  });
+}
+
+/// Builds an [ObjectTablePlan] from a list of maps, or null when [list]
+/// does not qualify as an ObjectTable (non-map rows, inconsistent key sets,
+/// non-string keys, or non-homogeneous-numeric columns).
+ObjectTablePlan? buildObjectTablePlan(List<dynamic> list) {
+  if (list.isEmpty) return null;
+  final first = list.first;
+  if (first is! Map) return null;
+  final keySet = first.keys.toSet();
+  if (keySet.isEmpty) return null;
+
+  final rows = <Map<String, dynamic>>[Map<String, dynamic>.from(first)];
+  for (var i = 1; i < list.length; i++) {
+    final element = list[i];
+    if (element is! Map) return null;
+    if (element.length != keySet.length) return null;
+    for (final k in element.keys) {
+      if (k is! String || !keySet.contains(k)) return null;
+    }
+    rows.add(Map<String, dynamic>.from(element));
+  }
+
+  final fieldSet = <String>{};
+  for (final row in rows) {
+    fieldSet.addAll(row.keys);
+  }
+  final fields = fieldSet.toList()..sort();
+
+  final columnTypes = <String, BtoonElementType>{};
+  for (final field in fields) {
+    final type = columnElementType(rows, field);
+    if (type == null) return null;
+    columnTypes[field] = type;
+  }
+  return ObjectTablePlan(rows: rows, fields: fields, columnTypes: columnTypes);
 }
 
 /// Writes [values] as raw fixed-width data using [type].

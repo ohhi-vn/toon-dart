@@ -310,6 +310,12 @@ KeyValueResult decodeKeyValue(
   Depth baseDepth,
   ResolvedDecodeOptions options,
 ) {
+  // Fast path: lines without any '[' cannot be array headers and cannot
+  // look like malformed headers, so skip both scans entirely.
+  if (content.indexOf('[') == -1) {
+    return _decodePlainKeyValue(content, cursor, baseDepth, options);
+  }
+
   // Check for array header first (before parsing key)
   final arrayHeader = parseArrayHeaderLine(content, DEFAULT_DELIMITER);
   if (arrayHeader != null && arrayHeader.header.key != null) {
@@ -367,7 +373,17 @@ KeyValueResult decodeKeyValue(
         'Invalid array header: extra content between bracket and colon');
   }
 
-  // Regular key-value pair
+  return _decodePlainKeyValue(content, cursor, baseDepth, options);
+}
+
+/// Decodes a regular key-value pair: `key: value`, `key:` (nested or empty
+/// object), or `key: []`. Header handling has already been ruled out.
+KeyValueResult _decodePlainKeyValue(
+  String content,
+  LineCursor cursor,
+  Depth baseDepth,
+  ResolvedDecodeOptions options,
+) {
   final keyToken = parseKeyToken(content, 0);
   final rest = trimSpaceOnly(content.substring(keyToken.end));
 
@@ -454,8 +470,7 @@ List<JsonPrimitive> decodeInlinePrimitiveArray(
   String inlineValues,
   ResolvedDecodeOptions options,
 ) {
-  final values = parseDelimitedValues(inlineValues, header.delimiter);
-  final primitives = mapRowValuesToPrimitives(values);
+  final primitives = parseDelimitedPrimitives(inlineValues, header.delimiter);
 
   assertExpectedCount(
       primitives.length, header.length, 'inline array items', options);
@@ -567,17 +582,14 @@ List<JsonObject> decodeTabularArray(
       endLine = line.lineNumber;
 
       cursor.advance();
-      final values = parseDelimitedValues(line.content, header.delimiter);
-      assertExpectedCount(
-          values.length, header.fields?.length ?? 0, 'tabular row values', options);
+      final primitives =
+          parseDelimitedPrimitives(line.content, header.delimiter);
+      assertExpectedCount(primitives.length, header.fields?.length ?? 0,
+          'tabular row values', options);
 
-      final primitives = mapRowValuesToPrimitives(values);
-      JsonObject obj;
-
-      obj = _assignCellsToFields(primitives, header.tabularFields!,
+      objects.add(_assignCellsToFields(primitives, header.tabularFields!,
           header.fields?.length ?? 0,
-          strict: options.strict);
-      objects.add(obj);
+          strict: options.strict));
     } else if (line.depth > rowDepth) {
       // Deeper indentation - shouldn't happen in valid tabular arrays
       // Skip or break depending on strict mode
@@ -701,18 +713,13 @@ JsonObject decodeObjectFromListItem(
 ) {
   final afterHyphen = firstLine.content.substring(LIST_ITEM_PREFIX.length);
 
-  // Check if first field is an array to adjust depth
-  final arrayHeader = parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER);
-  final isArrayFirstField = arrayHeader != null;
-
   // Per TOON spec §10: When first field of list-item object is an array,
   // array contents (rows or items) are at depth +2 from hyphen line.
   // For non-array first fields, content is at depth +1 from hyphen line
   // (same as sibling fields).
   // We pass baseDepth + 1 so that decodeArrayFromHeader / decodeKeyValue
   // find contents at baseDepth + 2 / baseDepth + 1 respectively.
-  final adjustedDepth = isArrayFirstField ? baseDepth + 1 : baseDepth + 1;
-  final result = decodeKeyValue(afterHyphen, cursor, adjustedDepth, options);
+  final result = decodeKeyValue(afterHyphen, cursor, baseDepth + 1, options);
 
   final obj = <String, JsonValue>{result.key: result.value};
 
@@ -839,10 +846,9 @@ JsonObject decodeKeyedTabularObject(
       final entryKey = parseStringLiteral(line.content.substring(0, colonPos).trim());
       final afterColon = line.content.substring(colonPos + 1).trim();
 
-      final cellValues = afterColon.isNotEmpty
-          ? parseDelimitedValues(afterColon, header.delimiter)
-          : <String>[];
-      final primitives = mapRowValuesToPrimitives(cellValues);
+      final primitives = afterColon.isNotEmpty
+          ? parseDelimitedPrimitives(afterColon, header.delimiter)
+          : <JsonPrimitive>[];
 
       // Assign cells to fields
       if (header.tabularFields != null) {

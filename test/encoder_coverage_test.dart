@@ -340,7 +340,7 @@ void main() {
 
   group('LineWriter edge cases', () {
     test('pushArrayHeader with all options', () {
-      final writer = LineWriter(2, estimatedCapacity: 100);
+      final writer = LineWriter(2);
       writer.pushArrayHeader(0,
           key: 'test',
           length: 5,

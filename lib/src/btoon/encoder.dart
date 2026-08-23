@@ -296,7 +296,8 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
     return;
   }
   if (value is BtoonObjectTable) {
-    _encodeObjectTable(value.normalized(), state, writer);
+    // Rows are already typed maps — encode directly, no defensive copy.
+    _encodeObjectTable(value.rows, state, writer);
     return;
   }
   if (value is List) {
@@ -307,10 +308,10 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
       }
       return;
     }
-    final intType = _allInts(value) ? bestIntElementType(value) : null;
-    if (intType != null && typedArrays) {
+    final intType = typedArrays ? _intArrayType(value) : null;
+    if (intType != null) {
       if (!isCollect) {
-        _writeTypedArray(
+        _emitTypedArray(
           writer,
           value.cast<num>(),
           intType == BtoonElementType.uint64 ? BtoonElementType.int64 : intType,
@@ -318,22 +319,22 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
       }
       return;
     }
-    if (_allDoubles(value)) {
-      final doubleType = value.every((e) => isLosslessFloat32(e as double))
-          ? BtoonElementType.float32
-          : BtoonElementType.float64;
-      if (!isCollect && typedArrays) {
-        _writeTypedArray(writer, value.cast<num>(), doubleType);
-      }
-      if (isCollect && !typedArrays) {
-        // Continue through the general tagged-array path below.
-      } else if (typedArrays) {
+    if (typedArrays) {
+      final doubleType = _doubleArrayType(value);
+      if (doubleType != null) {
+        if (!isCollect) {
+          _emitTypedArray(writer, value.cast<num>(), doubleType);
+        }
         return;
       }
     }
-    if (objectTables && isObjectTable(value)) {
-      _encodeObjectTable(objectTableRows(value), state, writer);
-      return;
+    if (objectTables) {
+      final plan = buildObjectTablePlan(value);
+      if (plan != null) {
+        _encodeObjectTable(plan.rows, state, writer,
+            fields: plan.fields, columnTypes: plan.columnTypes);
+        return;
+      }
     }
     if (!isCollect) {
       writer.writeByte(tagArray);
@@ -367,25 +368,42 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
   throw BtoonEncodeError('unsupported value type: ${value.runtimeType}', value);
 }
 
-/// True if every element is a [double] (used for numeric list detection).
-bool _allDoubles(List<dynamic> list) {
-  for (final element in list) {
-    if (element is! double) return false;
-  }
-  return true;
-}
-
-/// True if every element is an [int] (used for numeric list detection).
-bool _allInts(List<dynamic> list) {
-  for (final element in list) {
-    if (element is! int) return false;
-  }
-  return true;
-}
-
 // #endregion
 
 // #region TypedArray
+
+/// Single pass over [list]: the narrowest integer element type covering all
+/// values, or null when any element is not an `int` (or out of int64 range).
+BtoonElementType? _intArrayType(List<dynamic> list) {
+  var min = 0;
+  var max = 0;
+  var first = true;
+  for (final e in list) {
+    if (e is! int) return null;
+    if (!isInInt64Range(e)) return null;
+    if (first) {
+      min = max = e;
+      first = false;
+    } else if (e < min) {
+      min = e;
+    } else if (e > max) {
+      max = e;
+    }
+  }
+  return bestIntElementTypeForRange(min, max);
+}
+
+/// Single pass over [list]: `float32` when every element is a `double` that
+/// survives a float32 round-trip, `float64` for other all-double lists,
+/// null otherwise.
+BtoonElementType? _doubleArrayType(List<dynamic> list) {
+  var lossless32 = true;
+  for (final e in list) {
+    if (e is! double) return null;
+    if (!isLosslessFloat32(e)) lossless32 = false;
+  }
+  return lossless32 ? BtoonElementType.float32 : BtoonElementType.float64;
+}
 
 void _writeTypedArray(
   BtoonWriter writer,
@@ -400,6 +418,17 @@ void _writeTypedArray(
     );
   }
   if (forced != null) validateNumericRange(values, type);
+  _emitTypedArray(writer, values, type);
+}
+
+/// Writes a TypedArray whose [values] are already known to fit [type]
+/// (auto-detected element types guarantee this; user-supplied types go
+/// through [_writeTypedArray], which validates).
+void _emitTypedArray(
+  BtoonWriter writer,
+  List<num> values,
+  BtoonElementType type,
+) {
   writer.writeByte(tagTypedArray);
   writer.writeByte(elementTagOf(type));
   writer.writeUint32(values.length);
@@ -418,18 +447,20 @@ void _writeTypedArray(
 void _encodeObjectTable(
   List<Map<String, dynamic>> rows,
   _EncodeState state,
-  BtoonWriter? writer,
-) {
+  BtoonWriter? writer, {
+  List<String>? fields,
+  Map<String, BtoonElementType>? columnTypes,
+}) {
   final isCollect = writer == null;
-  final fields = objectTableFields(rows);
+  final resolvedFields = fields ?? objectTableFields(rows);
 
   if (!isCollect) {
     writer.writeByte(tagObjectTable);
     writer.writeUint32(rows.length);
-    writer.writeUint32(fields.length);
+    writer.writeUint32(resolvedFields.length);
   }
-  for (final field in fields) {
-    final columnType = columnElementType(rows, field);
+  for (final field in resolvedFields) {
+    final columnType = columnTypes?[field] ?? columnElementType(rows, field);
     if (columnType == null) {
       throw BtoonEncodeError(
         'ObjectTable column "$field" must be a homogeneous numeric column',
