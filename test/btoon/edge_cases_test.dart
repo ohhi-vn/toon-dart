@@ -110,10 +110,13 @@ void main() {
   });
 
   group('trailing data and truncation', () {
-    test('trailing bytes after the value are ignored on decode', () {
+    test('trailing bytes after the body are rejected (§19)', () {
       final bytes = btoonEncode(1);
       final withTrailing = Uint8List.fromList([...bytes, 0x41, 0x42]);
-      expect(btoonDecode(withTrailing), 1);
+      expect(
+        () => btoonDecode(withTrailing),
+        throwsA(isA<BtoonDecodeError>()),
+      );
     });
 
     test('every truncation point of a nested value fails cleanly', () {
@@ -201,9 +204,11 @@ void main() {
       expect(btoonDecode(floatBytes), isEmpty);
     });
 
-    test('automatic width picks the narrowest lossless type', () {
-      expect(btoonEncode([1, 2])[9], 0x01); // uint8
-      expect(btoonEncode([200, 1000])[9], 0x03); // uint16
+    test('automatic width picks the narrowest lossless type (signed first)',
+        () {
+      expect(btoonEncode([1, 2])[9], 0x00); // int8 (§26.4 tie-break)
+      expect(btoonEncode([200, 250])[9], 0x01); // uint8 (127 < 200)
+      expect(btoonEncode([200, 1000])[9], 0x02); // int16
       expect(btoonEncode([-1, 1])[9], 0x00); // int8
       expect(btoonEncode([-1, 300])[9], 0x02); // int16
       expect(btoonEncode([1.5, 2.5])[9], 0x07); // float32
@@ -227,16 +232,22 @@ void main() {
       ]);
     });
 
-    test('uint64 column is allowed in ObjectTable', () {
+    test('wide integer columns use int64 (signed first, §17)', () {
+      const options = BtoonEncodeOptions(minStringTableFrequency: 100);
       final rows = [
         {'a': 1},
         {'a': 5000000000},
       ];
-      final bytes = btoonEncode(rows);
-      expect(bytes[8], 0x0D);
-      // The single column's element type is 0x0F (uint64).
-      expect(bytes.sublist(8).any((b) => b == 0x0F), isTrue);
-      expectRoundTrip(rows);
+      final bytes = btoonEncode(rows, options: options);
+      final bd = ByteData.sublistView(bytes);
+      expect(bytes[8], 0x0D); // tagObjectTable
+      expect(bd.getUint32(9, Endian.little), 2); // row count
+      expect(bd.getUint32(13, Endian.little), 1); // column count
+      var p = 17;
+      expect(bytes[p], 0x07); // inline String column name
+      p += 5 + bd.getUint32(p + 1, Endian.little);
+      expect(bytes[p], 0x06); // int64 element type
+      expectRoundTrip(rows, encodeOptions: options);
     });
 
     test('mixed int/double columns use a single column width', () {
@@ -273,10 +284,11 @@ void main() {
     });
 
     test('minStringTableFrequency = 2 excludes single occurrences', () {
-      final bytes = btoonEncode({'a': 'once'});
+      const options = BtoonEncodeOptions(minStringTableFrequency: 2);
+      final bytes = btoonEncode({'a': 'once'}, options: options);
       expect(bytes[5] & 0x04, 0);
       // but a repeated string is added
-      final repeated = btoonEncode({'a': 'x', 'b': 'x'});
+      final repeated = btoonEncode({'a': 'x', 'b': 'x'}, options: options);
       expect(repeated[5] & 0x04, 0x04);
     });
 

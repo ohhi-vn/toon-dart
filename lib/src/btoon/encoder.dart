@@ -27,6 +27,7 @@ import 'types.dart';
 class _EncodeState {
   final BtoonSession? session;
   final int minTableFreq;
+  final bool countFrequencies;
   final bool useStringTable;
   final bool typedArrays;
   final bool objectTables;
@@ -36,25 +37,75 @@ class _EncodeState {
   final List<String> _order = [];
   final Set<String> _orderSeen = {};
 
+  /// True when the default string-table mode is in effect (every
+  /// first-encounter string is tabled), letting the collect pass assign
+  /// table indices directly instead of counting occurrences.
+  final bool directTable;
+
+  /// Strings that MUST appear in the per-message table regardless of their
+  /// frequency (ObjectTable column names when a session dictionary is
+  /// active, §14).
+  final Set<String> _forced = {};
+
   final List<String> table = [];
   final Map<String, int> tableIndex = {};
 
   final List<String> inlineStrings = [];
   final Set<String> _inlineSeen = {};
 
+  /// Per-encode memo of list scans (typed-array element type, ObjectTable
+  /// plan) keyed by list identity, so the collect and emit passes scan each
+  /// list once.
+  final Map<List<dynamic>, Object> scanCache = {};
+
   _EncodeState(
       {required this.session,
       required this.minTableFreq,
+      required this.countFrequencies,
       required this.useStringTable,
       required this.typedArrays,
       required this.objectTables,
-      required this.schemaIdUint16});
+      required this.schemaIdUint16})
+      : directTable = useStringTable && minTableFreq <= 1;
 
   /// Collect pass: record a string occurrence (session strings are skipped).
   void recordString(String value) {
     final session = this.session;
     if (session != null && session.indexOf(value) != null) return;
-    _freq[value] = (_freq[value] ?? 0) + 1;
+    if (directTable) {
+      // First-encounter order == table order: assign the index directly.
+      final existing = tableIndex[value];
+      if (existing == null) {
+        tableIndex[value] = table.length;
+        table.add(value);
+      }
+      return;
+    }
+    if (countFrequencies) {
+      _freq[value] = (_freq[value] ?? 0) + 1;
+    }
+    if (_orderSeen.add(value)) {
+      _order.add(value);
+    }
+  }
+
+  /// Collect pass: force [value] into the per-message table (§14) even when
+  /// it occurs once or the table is disabled.
+  void forceTableString(String value) {
+    final session = this.session;
+    if (session != null && session.indexOf(value) != null) return;
+    if (!_forced.add(value)) return;
+    if (directTable) {
+      final existing = tableIndex[value];
+      if (existing == null) {
+        tableIndex[value] = table.length;
+        table.add(value);
+      }
+      return;
+    }
+    if (countFrequencies) {
+      _freq[value] = (_freq[value] ?? 0) + 1;
+    }
     if (_orderSeen.add(value)) {
       _order.add(value);
     }
@@ -68,9 +119,12 @@ class _EncodeState {
   }
 
   void buildTable() {
-    if (!useStringTable) return;
+    if (directTable) return; // table already built during collect
+    if (!useStringTable && _forced.isEmpty) return;
     for (final value in _order) {
-      if ((_freq[value] ?? 0) >= minTableFreq) {
+      if (_forced.contains(value) ||
+          !countFrequencies ||
+          (_freq[value] ?? 0) >= minTableFreq) {
         tableIndex[value] = table.length;
         table.add(value);
       }
@@ -92,7 +146,9 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
   final state = _EncodeState(
     session: options.session,
     minTableFreq: options.minStringTableFrequency,
-    useStringTable: options.stringTable == BtoonStringTableMode.auto,
+    countFrequencies: options.minStringTableFrequency > 1,
+    useStringTable: options.stringTable == BtoonStringTableMode.auto &&
+        !options.noStringTable,
     typedArrays: options.typedArrays,
     objectTables: options.objectTables,
     schemaIdUint16: options.schemaIdUint16,
@@ -109,17 +165,9 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
   }
   state.buildTable();
 
-  // Pass 2: emit the body.
-  final bodyWriter = BtoonWriter();
-  if (schema != null) {
-    _encodeSchemaBody(value, schema, state, bodyWriter);
-  } else {
-    _encodeValue(value, state, bodyWriter,
-        typedArrays: state.typedArrays, objectTables: state.objectTables);
-  }
-  final body = bodyWriter.takeBytes();
-
-  // Assemble the envelope + optional sections + aligned body.
+  // Pass 2: emit the body. With no string table and no schema the body
+  // starts right after the 8-byte header, so it can be written directly
+  // into the envelope writer — no intermediate body buffer or copy.
   final writer = BtoonWriter();
   writer.writeBytes(btoonMagic);
   writer.writeByte(btoonVersion);
@@ -155,8 +203,20 @@ Uint8List btoonEncodeBytes(Object? value, BtoonEncodeOptions options) {
     _writeSchema(writer, schema, (flags & flagSchemaIdUint16) != 0);
   }
 
-  writer.align(8);
-  writer.writeBytes(body);
+  if (schema != null || state.table.isNotEmpty) {
+    writer.align(8);
+    final bodyWriter = BtoonWriter();
+    if (schema != null) {
+      _encodeSchemaBody(value, schema, state, bodyWriter);
+    } else {
+      _encodeValue(value, state, bodyWriter,
+          typedArrays: state.typedArrays, objectTables: state.objectTables);
+    }
+    writer.writeWriter(bodyWriter);
+  } else {
+    _encodeValue(value, state, writer,
+        typedArrays: state.typedArrays, objectTables: state.objectTables);
+  }
 
   if (options.session != null && options.growSession) {
     state.growSession(options.session!);
@@ -297,7 +357,23 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
   }
   if (value is BtoonObjectTable) {
     // Rows are already typed maps — encode directly, no defensive copy.
-    _encodeObjectTable(value.rows, state, writer);
+    final plan = _objectTablePlan(value.rows, state);
+    if (plan != null) {
+      _encodeObjectTable(plan.rows, state, writer,
+          fields: plan.fields, columnTypes: plan.columnTypes);
+    } else {
+      // Not a valid table — the direct encoding reports the offending
+      // column.
+      _encodeObjectTable(value.rows, state, writer);
+    }
+    return;
+  }
+  if (value is BtoonExtension) {
+    if (!isCollect) {
+      writer.writeByte(value.tag);
+      writer.writeUint32(value.payload.length);
+      writer.writeBytes(value.payload);
+    }
     return;
   }
   if (value is List) {
@@ -308,28 +384,17 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
       }
       return;
     }
-    final intType = typedArrays ? _intArrayType(value) : null;
-    if (intType != null) {
-      if (!isCollect) {
-        _emitTypedArray(
-          writer,
-          value.cast<num>(),
-          intType == BtoonElementType.uint64 ? BtoonElementType.int64 : intType,
-        );
-      }
-      return;
-    }
     if (typedArrays) {
-      final doubleType = _doubleArrayType(value);
-      if (doubleType != null) {
+      final scan = _typedArrayScan(value, state);
+      if (scan.type != null) {
         if (!isCollect) {
-          _emitTypedArray(writer, value.cast<num>(), doubleType);
+          _emitScannedTypedArray(writer, value, scan);
         }
         return;
       }
     }
     if (objectTables) {
-      final plan = buildObjectTablePlan(value);
+      final plan = _objectTablePlan(value, state);
       if (plan != null) {
         _encodeObjectTable(plan.rows, state, writer,
             fields: plan.fields, columnTypes: plan.columnTypes);
@@ -347,13 +412,15 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
     return;
   }
   if (value is Map) {
-    final keys = value.keys.toList();
-    for (final key in keys) {
+    final keys = <String>[];
+    for (final key in value.keys) {
       if (key is! String) {
         throw BtoonEncodeError('map keys must be strings', key);
       }
+      keys.add(key);
     }
-    keys.sort();
+    // Keys are sorted by their UTF-8 byte sequence (§17).
+    sortUtf8(keys);
     if (!isCollect) {
       writer.writeByte(tagObject);
       writer.writeUint32(keys.length);
@@ -372,37 +439,146 @@ void _encodeValue(Object? value, _EncodeState state, BtoonWriter? writer,
 
 // #region TypedArray
 
-/// Single pass over [list]: the narrowest integer element type covering all
-/// values, or null when any element is not an `int` (or out of int64 range).
-BtoonElementType? _intArrayType(List<dynamic> list) {
+/// Result of scanning a list for a TypedArray encoding (memoized across the
+/// collect and emit passes).
+class _ListScan {
+  /// Element type, or null when the list is not a homogeneous numeric
+  /// array (falls through to ObjectTable / general array).
+  final BtoonElementType? type;
+
+  /// Prebuilt float32/float64 buffer when [type] is a float type; null for
+  /// integer types (written per element).
+  final TypedData? buffer;
+
+  const _ListScan(this.type, this.buffer);
+}
+
+/// Single-pass scan of [list]: classifies it as an int or double typed
+/// array, choosing the narrowest lossless element type and, for doubles,
+/// building the conversion buffer in the same pass. Statically-typed lists
+/// get a specialized loop without per-element dynamic dispatch.
+_ListScan _scanTypedArray(List<dynamic> list) {
+  if (list is List<int>) return _scanIntList(list);
+  if (list is List<double>) return _scanDoubleList(list);
+  return _scanMixedList(list);
+}
+
+_ListScan _scanIntList(List<int> list) {
   var min = 0;
   var max = 0;
-  var first = true;
-  for (final e in list) {
-    if (e is! int) return null;
-    if (!isInInt64Range(e)) return null;
-    if (first) {
+  for (var i = 0; i < list.length; i++) {
+    final e = list[i];
+    if (e < int64Min || e > int64Max) return const _ListScan(null, null);
+    if (i == 0) {
       min = max = e;
-      first = false;
     } else if (e < min) {
       min = e;
     } else if (e > max) {
       max = e;
     }
   }
-  return bestIntElementTypeForRange(min, max);
+  var type = bestIntElementTypeForRange(min, max);
+  if (type == null) return const _ListScan(null, null);
+  // uint64 is not a valid TypedArray selector (§12); the values fit int64.
+  if (type == BtoonElementType.uint64) type = BtoonElementType.int64;
+  return _ListScan(type, null);
 }
 
-/// Single pass over [list]: `float32` when every element is a `double` that
-/// survives a float32 round-trip, `float64` for other all-double lists,
-/// null otherwise.
-BtoonElementType? _doubleArrayType(List<dynamic> list) {
+_ListScan _scanDoubleList(List<double> list) {
+  final length = list.length;
+  final f32 = Float32List(length);
   var lossless32 = true;
-  for (final e in list) {
-    if (e is! double) return null;
-    if (!isLosslessFloat32(e)) lossless32 = false;
+  for (var i = 0; i < length; i++) {
+    final e = list[i];
+    f32[i] = e;
+    if (lossless32 && f32[i] != e) lossless32 = false;
   }
-  return lossless32 ? BtoonElementType.float32 : BtoonElementType.float64;
+  if (lossless32) return _ListScan(BtoonElementType.float32, f32);
+  // Rare path: rebuild as float64 (NaN payloads and out-of-float32 values).
+  final f64 = Float64List(length);
+  for (var i = 0; i < length; i++) {
+    f64[i] = list[i];
+  }
+  return _ListScan(BtoonElementType.float64, f64);
+}
+
+_ListScan _scanMixedList(List<dynamic> list) {
+  var allInt = true;
+  var allDouble = true;
+  var min = 0;
+  var max = 0;
+  Float32List? f32;
+  Float64List? f64;
+  var lossless32 = true;
+  final length = list.length;
+  for (var i = 0; i < length; i++) {
+    final e = list[i];
+    if (e is int) {
+      allDouble = false;
+      if (e < int64Min || e > int64Max) return const _ListScan(null, null);
+      if (i == 0) {
+        min = max = e;
+      } else if (e < min) {
+        min = e;
+      } else if (e > max) {
+        max = e;
+      }
+    } else if (e is double) {
+      allInt = false;
+      f64 ??= Float64List(length);
+      f64[i] = e;
+      f32 ??= Float32List(length);
+      f32[i] = e;
+      if (lossless32 && f32[i] != e) lossless32 = false;
+    } else {
+      return const _ListScan(null, null);
+    }
+  }
+  if (allInt) {
+    var type = bestIntElementTypeForRange(min, max);
+    if (type == null) return const _ListScan(null, null);
+    // uint64 is not a valid TypedArray selector (§12); the values fit int64.
+    if (type == BtoonElementType.uint64) type = BtoonElementType.int64;
+    return _ListScan(type, null);
+  }
+  if (allDouble) {
+    if (lossless32) return _ListScan(BtoonElementType.float32, f32);
+    return _ListScan(BtoonElementType.float64, f64);
+  }
+  return const _ListScan(null, null);
+}
+
+/// Memoized [_ListScan] for [list] within one encode.
+_ListScan _typedArrayScan(List<dynamic> list, _EncodeState state) {
+  final cached = state.scanCache[list];
+  if (cached is _ListScan) return cached;
+  final scan = _scanTypedArray(list);
+  state.scanCache[list] = scan;
+  return scan;
+}
+
+/// Emits a TypedArray for a scan that already classified [list] (and, for
+/// float types, prebuilt its buffer).
+void _emitScannedTypedArray(
+  BtoonWriter writer,
+  List<dynamic> list,
+  _ListScan scan,
+) {
+  final type = scan.type!;
+  writer.writeByte(tagTypedArray);
+  writer.writeByte(elementTagOf(type));
+  writer.writeUint32(list.length);
+  // PadLen counts the zero bytes that follow it (§16), so account for the
+  // PadLen byte itself when computing how many remain to align the buffer.
+  final padLen = (type.size - ((writer.length + 1) % type.size)) % type.size;
+  writer.writeByte(padLen);
+  writer.writePadding(padLen);
+  final buffer = scan.buffer;
+  if (buffer != null) {
+    writer.writeBytes(Uint8List.sublistView(buffer));
+  } else {
+    writeRawNumericData(writer, asNumList(list), type);
+  }
 }
 
 void _writeTypedArray(
@@ -444,8 +620,25 @@ void _emitTypedArray(
 
 // #region ObjectTable
 
+/// Memoized [ObjectTablePlan] for [list] within one encode, so the collect
+/// and emit passes classify each table once.
+ObjectTablePlan? _objectTablePlan(List<dynamic> list, _EncodeState state) {
+  final cached = state.scanCache[list];
+  if (cached is ObjectTablePlan) return cached;
+  if (cached is _NullPlan) return null;
+  final plan = buildObjectTablePlan(list);
+  state.scanCache[list] = plan ?? const _NullPlan();
+  return plan;
+}
+
+/// Cache sentinel for lists that do not qualify as ObjectTables (null is
+/// ambiguous with an absent cache entry).
+class _NullPlan {
+  const _NullPlan();
+}
+
 void _encodeObjectTable(
-  List<Map<String, dynamic>> rows,
+  List<Map<dynamic, dynamic>> rows,
   _EncodeState state,
   BtoonWriter? writer, {
   List<String>? fields,
@@ -467,27 +660,73 @@ void _encodeObjectTable(
         rows,
       );
     }
-    if (state.session != null &&
-        state.session!.length > 0 &&
-        state.session!.indexOf(field) == null) {
-      throw BtoonEncodeError(
-          'ObjectTable column names must be in the session dictionary', field);
+    final session = state.session;
+    if (session != null &&
+        session.length > 0 &&
+        session.indexOf(field) == null) {
+      // With the session flag (0x08) set, column names MUST be StringRefs
+      // (§14); force the name into the per-message table so it can be
+      // referenced (and so the no-table flag 0x10 is not set).
+      state.forceTableString(field);
+    } else {
+      state.recordString(field);
     }
-    _emitString(field, state, writer);
     if (!isCollect) {
+      _emitString(field, state, writer);
       writer.writeByte(elementTagOf(columnType));
       final padLen =
           (columnType.size - ((writer.length + 1) % columnType.size)) %
               columnType.size;
       writer.writeByte(padLen);
       writer.writePadding(padLen);
-      writeRawNumericData(writer, _columnValues(rows, field), columnType);
+      _writeColumnValues(writer, rows, field, columnType);
     }
   }
 }
 
-List<num> _columnValues(List<Map<String, dynamic>> rows, String field) {
-  return rows.map((row) => row[field] as num).toList();
+/// Writes a single ObjectTable column by reading each row's value for
+/// [field] directly — no intermediate column list.
+void _writeColumnValues(
+  BtoonWriter writer,
+  List<Map<dynamic, dynamic>> rows,
+  String field,
+  BtoonElementType type,
+) {
+  final n = rows.length;
+  switch (type) {
+    case BtoonElementType.float64:
+      final buffer = Float64List(n);
+      for (var i = 0; i < n; i++) {
+        buffer[i] = rows[i][field] as double;
+      }
+      writer.writeBytes(Uint8List.sublistView(buffer));
+    case BtoonElementType.float32:
+      final buffer = Float32List(n);
+      for (var i = 0; i < n; i++) {
+        buffer[i] = rows[i][field] as double;
+      }
+      writer.writeBytes(Uint8List.sublistView(buffer));
+    case BtoonElementType.int8:
+    case BtoonElementType.uint8:
+      for (var i = 0; i < n; i++) {
+        writer.writeByte(rows[i][field] as int);
+      }
+    case BtoonElementType.int16:
+    case BtoonElementType.uint16:
+      for (var i = 0; i < n; i++) {
+        writer.writeInt16(rows[i][field] as int);
+      }
+    case BtoonElementType.int32:
+    case BtoonElementType.uint32:
+      for (var i = 0; i < n; i++) {
+        writer.writeInt32(rows[i][field] as int);
+      }
+    case BtoonElementType.int64:
+    case BtoonElementType.uint64:
+      for (var i = 0; i < n; i++) {
+        writer.writeInt64(rows[i][field] as int);
+      }
+  }
 }
 
 // #endregion
@@ -501,6 +740,9 @@ void _writeSchema(BtoonWriter writer, BtoonSchema schema, bool idUint16) {
     }
     writer.writeUint16(schema.id);
   } else {
+    if (schema.id < 0 || schema.id > 0xFFFFFFFF) {
+      throw BtoonEncodeError('schema id does not fit UInt32', schema.id);
+    }
     writer.writeUint32(schema.id);
   }
   final name = utf8.encode(schema.name);
@@ -524,8 +766,14 @@ void _encodeSchemaBody(
   final isCollect = writer == null;
   if (!isCollect) {
     if (state.schemaIdUint16) {
+      if (schema.id < 0 || schema.id > 0xFFFF) {
+        throw BtoonEncodeError('schema id does not fit UInt16', schema.id);
+      }
       writer.writeUint16(schema.id);
     } else {
+      if (schema.id < 0 || schema.id > 0xFFFFFFFF) {
+        throw BtoonEncodeError('schema id does not fit UInt32', schema.id);
+      }
       writer.writeUint32(schema.id);
     }
   }
@@ -679,14 +927,16 @@ Map<String, dynamic> _stringKeyMap(Map<dynamic, dynamic> map) {
 }
 
 BtoonSchema? _deriveSchema(Object? value) {
-  List<Map<String, dynamic>> rows;
+  List<Map<dynamic, dynamic>> rows;
   if (value is Map) {
-    rows = [_stringKeyMap(value)];
+    _validateStringKeys(value);
+    rows = [value];
   } else if (value is List) {
-    rows = [];
+    rows = <Map<dynamic, dynamic>>[];
     for (final element in value) {
       if (element is! Map) return null;
-      rows.add(_stringKeyMap(element));
+      _validateStringKeys(element);
+      rows.add(element);
     }
   } else {
     return null;
@@ -694,9 +944,12 @@ BtoonSchema? _deriveSchema(Object? value) {
 
   final keySet = <String>{};
   for (final row in rows) {
-    keySet.addAll(row.keys);
+    for (final key in row.keys) {
+      if (key is String) keySet.add(key);
+    }
   }
-  final keys = keySet.toList()..sort();
+  final keys = keySet.toList();
+  sortUtf8(keys);
   final fields = <BtoonSchemaField>[];
   for (final key in keys) {
     var type = BtoonSchemaType.null_;
@@ -710,6 +963,15 @@ BtoonSchema? _deriveSchema(Object? value) {
     fields.add(BtoonSchemaField(key, type: type));
   }
   return BtoonSchema(fields);
+}
+
+/// Validates that every key of [map] is a string.
+void _validateStringKeys(Map<dynamic, dynamic> map) {
+  for (final key in map.keys) {
+    if (key is! String) {
+      throw BtoonEncodeError('map keys must be strings', key);
+    }
+  }
 }
 
 BtoonSchemaType _inferType(Object? value) {

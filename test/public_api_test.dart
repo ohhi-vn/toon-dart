@@ -21,6 +21,9 @@ Uint8List _stripEmbeddedSchema(Uint8List bytes) {
       final length = readUint32();
       offset += length;
     }
+    while (offset % 8 != 0) {
+      offset++;
+    }
   }
   if ((flags & 0x02) != 0) {
     readUint32(); // schema id
@@ -208,7 +211,18 @@ void main() {
   });
 
   group('btoonDecodeWithSchema public API', () {
-    test('decodes schema-mode bytes with an out-of-band schema', () {
+    test('decodes schema-mode bytes with a matching out-of-band schema', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('id', type: BtoonSchemaType.integer),
+        const BtoonSchemaField('name', type: BtoonSchemaType.string),
+      ], id: 3, name: 'user');
+      final bytes = btoonEncodeWithSchema({'id': 1, 'name': 'Alice'}, schema);
+      // The embedded schema is authoritative (§15.1); the supplied schema
+      // validates it (same id and fields here).
+      expect(btoonDecodeWithSchema(bytes, schema), {'id': 1, 'name': 'Alice'});
+    });
+
+    test('a schema-mode body without the schema flag is rejected (§7.7)', () {
       final schema = BtoonSchema([
         const BtoonSchemaField('id', type: BtoonSchemaType.integer),
         const BtoonSchemaField('name', type: BtoonSchemaType.string),
@@ -216,7 +230,12 @@ void main() {
       final bytes = _stripEmbeddedSchema(
         btoonEncodeWithSchema({'id': 1, 'name': 'Alice'}, schema),
       );
-      expect(btoonDecodeWithSchema(bytes, schema), {'id': 1, 'name': 'Alice'});
+      // Flag 0x02 signals the body mode: with the flag cleared, the schema
+      // body cannot be decoded as a tagged value.
+      expect(
+        () => btoonDecodeWithSchema(bytes, schema),
+        throwsA(isA<BtoonDecodeError>()),
+      );
     });
 
     test('decodes a single record as a map', () {
@@ -231,7 +250,7 @@ void main() {
       final schema = BtoonSchema([
         const BtoonSchemaField('a', type: BtoonSchemaType.integer),
       ], id: 7, name: 'Seven');
-      final bytes = _stripEmbeddedSchema(btoonEncodeWithSchema({'a': 1}, schema));
+      final bytes = btoonEncodeWithSchema({'a': 1}, schema);
       final other = BtoonSchema([
         const BtoonSchemaField('a', type: BtoonSchemaType.integer),
       ], id: 99, name: 'Other');
@@ -294,12 +313,17 @@ void main() {
       ]);
     });
 
-    test('derived schema decodes out-of-band', () {
+    test('a schema-mode body without the schema flag is rejected (§7.7)', () {
       final schema = btoonDeriveSchema({'id': 1, 'name': 'Alice'});
       final bytes = _stripEmbeddedSchema(
         btoonEncodeAuto({'id': 1, 'name': 'Alice'}),
       );
-      expect(btoonDecodeWithSchema(bytes, schema), {'id': 1, 'name': 'Alice'});
+      // Flag 0x02 signals the body mode (§7.7): a schema body cannot be
+      // decoded as a tagged value once the flag is cleared.
+      expect(
+        () => btoonDecodeWithSchema(bytes, schema),
+        throwsA(isA<BtoonDecodeError>()),
+      );
     });
 
     test('throws for a non-object root', () {

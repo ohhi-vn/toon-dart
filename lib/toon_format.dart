@@ -59,6 +59,7 @@ export 'src/btoon/btoon.dart'
         BtoonElementType,
         BtoonTypedArray,
         BtoonObjectTable,
+        BtoonExtension,
         BtoonSession,
         BtoonSchema,
         BtoonSchemaField,
@@ -242,7 +243,7 @@ Uint8List btoonEncodeWithSchema(
     options: BtoonEncodeOptions(
       session: options?.session,
       growSession: options?.growSession ?? true,
-      minStringTableFrequency: options?.minStringTableFrequency ?? 2,
+      minStringTableFrequency: options?.minStringTableFrequency ?? 1,
       schema: schema,
       schemaMode: true,
     ),
@@ -251,10 +252,10 @@ Uint8List btoonEncodeWithSchema(
 
 /// Decodes a BTOON schema-mode binary using [schema].
 ///
-/// [schema] must match the schema the message was encoded with (same id and
-/// field order). If the message embedded its own schema it is used for
-/// decoding; pass [schema] for out-of-band schema sharing (messages encoded
-/// without an embedded schema).
+/// A schema-mode body always embeds its schema (§7.7, §21.2); the embedded
+/// schema is authoritative and is used for decoding. [schema] validates the
+/// embedded schema: it must carry the same id, name and fields, or a
+/// [BtoonDecodeError] is thrown.
 ///
 /// Returns a `Map` for a single record, or a `List<Map>` for repeated
 /// records. Throws [BtoonDecodeError] if [bytes] is malformed or [schema]
@@ -331,7 +332,7 @@ Uint8List btoonEncodeAuto(
     options: BtoonEncodeOptions(
       session: options?.session,
       growSession: options?.growSession ?? true,
-      minStringTableFrequency: options?.minStringTableFrequency ?? 2,
+      minStringTableFrequency: options?.minStringTableFrequency ?? 1,
       schema: btoonDeriveSchema(value),
       schemaMode: true,
     ),

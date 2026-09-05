@@ -19,6 +19,9 @@ class _DecodeState {
   final bool preserveBinary;
   final bool preserveTypedArrays;
   final int maxDepth;
+  final int maxStringSize;
+  final int maxBinarySize;
+  final int maxContainerCount;
   final bool schemaIdUint16;
   final bool sessionActive;
 
@@ -33,6 +36,9 @@ class _DecodeState {
     required this.preserveBinary,
     required this.preserveTypedArrays,
     required this.maxDepth,
+    required this.maxStringSize,
+    required this.maxBinarySize,
+    required this.maxContainerCount,
     required this.schemaIdUint16,
     required this.sessionActive,
   });
@@ -51,6 +57,25 @@ class _DecodeState {
     }
     for (final entry in inlineStrings) {
       target.add(entry);
+    }
+  }
+
+  /// Validates an element/entry count against both the configured limit and
+  /// the bytes actually available (each item needs at least [minBytesPerItem]
+  /// bytes on the wire) before anything is allocated (§24).
+  void checkCount(int count, int minBytesPerItem) {
+    if (count > maxContainerCount) {
+      throw BtoonDecodeError(
+        'container count $count exceeds the limit of $maxContainerCount',
+        reader.position,
+      );
+    }
+    if (count > reader.remaining ~/ minBytesPerItem) {
+      throw BtoonDecodeError(
+        'container count $count exceeds the ${reader.remaining} byte(s) '
+        'remaining',
+        reader.position,
+      );
     }
   }
 }
@@ -90,17 +115,43 @@ Object? btoonDecodeBytes(Uint8List bytes, BtoonDecodeOptions options) {
   final messageTable = <String>[];
   if ((flags & flagStringTable) != 0) {
     final count = reader.readUint32();
+    // Each entry is at least a UInt32 length field.
+    if (count > options.maxContainerCount || count > reader.remaining ~/ 4) {
+      throw BtoonDecodeError(
+        'string table count $count exceeds the available input',
+        reader.position,
+      );
+    }
     for (var i = 0; i < count; i++) {
       final length = reader.readUint32();
+      if (length > options.maxStringSize) {
+        throw BtoonDecodeError(
+          'string table entry length $length exceeds the limit of '
+          '${options.maxStringSize}',
+          reader.position,
+        );
+      }
       messageTable.add(_readUtf8(reader, length));
     }
     _skipAlignedPadding(reader);
   }
 
+  // The schema flag (0x02) is what signals a schema-mode body (§7.7); the
+  // embedded schema is authoritative in v1. A schema supplied out of band
+  // only validates the embedded one.
   BtoonSchema? schema;
-  final hasEmbeddedSchema = (flags & flagHasSchema) != 0;
-  if (hasEmbeddedSchema) {
-    schema = _readSchema(reader, (flags & flagSchemaIdUint16) != 0);
+  final isSchemaMode = (flags & flagHasSchema) != 0;
+  if (isSchemaMode) {
+    schema = _readSchema(
+      reader,
+      (flags & flagSchemaIdUint16) != 0,
+      maxStringSize: options.maxStringSize,
+      maxContainerCount: options.maxContainerCount,
+    );
+    final supplied = options.schema;
+    if (supplied != null) {
+      _validateSchemaMatches(supplied, schema, reader);
+    }
   }
 
   reader.skipPaddingTo(8);
@@ -113,14 +164,22 @@ Object? btoonDecodeBytes(Uint8List bytes, BtoonDecodeOptions options) {
     preserveBinary: options.preserveBinary,
     preserveTypedArrays: options.preserveTypedArrays,
     maxDepth: options.maxDepth,
+    maxStringSize: options.maxStringSize,
+    maxBinarySize: options.maxBinarySize,
+    maxContainerCount: options.maxContainerCount,
     schemaIdUint16: (flags & flagSchemaIdUint16) != 0,
     sessionActive: (flags & flagSession) != 0,
   );
 
-  final isSchemaMode = hasEmbeddedSchema || options.schema != null;
-  final result = isSchemaMode
-      ? _decodeSchemaBody(state, schema ?? options.schema)
-      : _decodeValue(state);
+  final result =
+      isSchemaMode ? _decodeSchemaBody(state, schema!) : _decodeValue(state);
+
+  if (!isSchemaMode && reader.remaining != 0) {
+    throw BtoonDecodeError(
+      'trailing bytes after the body: ${reader.remaining} unconsumed',
+      reader.position,
+    );
+  }
 
   state.growSessionIfNeeded();
   return result;
@@ -132,6 +191,10 @@ Object? _decodeValue(_DecodeState state, {int depth = 0}) {
   _checkDepth(state, depth);
   final reader = state.reader;
   final tag = reader.readByte();
+  // Dispatch hot path first: inline SmallInt (§8.2).
+  if (tag >= smallIntTagMin && tag <= smallIntTagMax) {
+    return tag - smallIntBias;
+  }
   switch (tag) {
     case tagNull:
       return null;
@@ -151,10 +214,17 @@ Object? _decodeValue(_DecodeState state, {int depth = 0}) {
       return _readInlineString(state);
     case tagBinary:
       final length = reader.readUint32();
+      if (length > state.maxBinarySize) {
+        throw BtoonDecodeError(
+          'binary length $length exceeds the limit of ${state.maxBinarySize}',
+          reader.position,
+        );
+      }
       final bytes = reader.readBytes(length);
       return state.preserveBinary ? BtoonBinary(bytes) : bytes;
     case tagArray:
       final count = reader.readUint32();
+      state.checkCount(count, 1); // each item carries at least a tag byte
       final list = <Object?>[];
       list.length = count;
       for (var i = 0; i < count; i++) {
@@ -163,6 +233,7 @@ Object? _decodeValue(_DecodeState state, {int depth = 0}) {
       return list;
     case tagObject:
       final count = reader.readUint32();
+      state.checkCount(count, 3); // key tag+ref, value tag minimum
       final map = <String, dynamic>{};
       for (var i = 0; i < count; i++) {
         final key = _readStringValue(state);
@@ -176,8 +247,19 @@ Object? _decodeValue(_DecodeState state, {int depth = 0}) {
     case tagStringRef:
       return _resolveStringRef(state, _readIntValue(reader));
     default:
-      if (tag >= smallIntTagMin && tag <= smallIntTagMax) {
-        return tag - smallIntBias;
+      if (tag >= 0xF0) {
+        // Extension type (§23): length-prefixed payload, so an unimplemented
+        // extension can be skipped. Surface the raw payload for round-trip.
+        final length = reader.readUint32();
+        if (length > state.maxBinarySize) {
+          throw BtoonDecodeError(
+            'extension payload length $length exceeds the limit of '
+            '${state.maxBinarySize}',
+            reader.position,
+          );
+        }
+        final payload = reader.readBytes(length);
+        return BtoonExtension(tag, payload);
       }
       throw BtoonDecodeError(
         'unknown value tag 0x${tag.toRadixString(16)}',
@@ -222,6 +304,12 @@ String _readStringValue(_DecodeState state) {
 
 String _readInlineString(_DecodeState state) {
   final length = state.reader.readUint32();
+  if (length > state.maxStringSize) {
+    throw BtoonDecodeError(
+      'string length $length exceeds the limit of ${state.maxStringSize}',
+      state.reader.position,
+    );
+  }
   final value = _readUtf8(state.reader, length);
   state.recordInlineString(value);
   return value;
@@ -256,6 +344,7 @@ Object? _readTypedArray(_DecodeState state) {
     );
   }
   final count = reader.readUint32();
+  state.checkCount(count, type.size);
   reader.skip(_readPadLen(reader));
   final values = readRawNumericData(reader, type, count);
   if (state.preserveTypedArrays) {
@@ -281,6 +370,14 @@ Object? _readObjectTable(_DecodeState state) {
   final reader = state.reader;
   final rowCount = reader.readUint32();
   final fieldCount = reader.readUint32();
+  state.checkCount(fieldCount, 5); // name tag+ref, selector, padLen, 1 cell
+  if (rowCount > state.maxContainerCount) {
+    throw BtoonDecodeError(
+      'container count $rowCount exceeds the limit of '
+      '${state.maxContainerCount}',
+      reader.position,
+    );
+  }
 
   final fields = <String>[];
   final columns = <List<num>>[];
@@ -338,7 +435,8 @@ Object? _decodeSchemaBody(_DecodeState state, BtoonSchema? schema) {
   }
   final rows = <Map<String, dynamic>>[];
   while (reader.remaining > 0) {
-    rows.add(_decodeSchemaFields(state, schema));
+    // Records are siblings: each starts at the same nesting depth.
+    rows.add(_decodeSchemaFields(state, schema, 0));
   }
   // A single record is returned as a map; repeated records as a list. (A
   // one-element list and a single record are byte-identical, per §15.)
@@ -346,15 +444,17 @@ Object? _decodeSchemaBody(_DecodeState state, BtoonSchema? schema) {
 }
 
 Map<String, dynamic> _decodeSchemaFields(
-    _DecodeState state, BtoonSchema schema) {
+    _DecodeState state, BtoonSchema schema, int depth) {
+  _checkDepth(state, depth);
   final map = <String, dynamic>{};
   for (final field in schema.fields) {
-    map[field.name] = _decodeSchemaFieldValue(state, field);
+    map[field.name] = _decodeSchemaFieldValue(state, field, depth);
   }
   return map;
 }
 
-Object? _decodeSchemaFieldValue(_DecodeState state, BtoonSchemaField field) {
+Object? _decodeSchemaFieldValue(
+    _DecodeState state, BtoonSchemaField field, int depth) {
   final reader = state.reader;
   switch (field.code) {
     case elementNull:
@@ -372,11 +472,17 @@ Object? _decodeSchemaFieldValue(_DecodeState state, BtoonSchemaField field) {
         );
       }
       final length = reader.readUint32();
+      if (length > state.maxBinarySize) {
+        throw BtoonDecodeError(
+          'binary length $length exceeds the limit of ${state.maxBinarySize}',
+          reader.position,
+        );
+      }
       final bytes = reader.readBytes(length);
       return state.preserveBinary ? BtoonBinary(bytes) : bytes;
     case elementArray:
     case elementObject:
-      return _decodeValue(state);
+      return _decodeValue(state, depth: depth + 1);
     default:
       return _readSchemaNumeric(reader, field.code);
   }
@@ -414,16 +520,44 @@ Object? _readSchemaNumeric(BtoonReader reader, int code) {
 
 // #region Schema parsing
 
-BtoonSchema _readSchema(BtoonReader reader, bool idUint16) {
+BtoonSchema _readSchema(BtoonReader reader, bool idUint16,
+    {int maxStringSize = 1 << 24, int maxContainerCount = 1 << 26}) {
   final id = idUint16 ? reader.readUint16() : reader.readUint32();
   final nameLength = reader.readUint32();
+  if (nameLength > maxStringSize) {
+    throw BtoonDecodeError(
+      'schema name length $nameLength exceeds the limit of $maxStringSize',
+      reader.position,
+    );
+  }
   final name = _readUtf8(reader, nameLength);
   final count = reader.readUint32();
+  if (count > maxContainerCount || count > reader.remaining ~/ 5) {
+    // Each field is at least a UInt32 name length plus a 1-byte selector.
+    throw BtoonDecodeError(
+      'schema field count $count exceeds the available input',
+      reader.position,
+    );
+  }
   final fields = <BtoonSchemaField>[];
   for (var i = 0; i < count; i++) {
     final length = reader.readUint32();
+    if (length > maxStringSize) {
+      throw BtoonDecodeError(
+        'schema field name length $length exceeds the limit of '
+        '$maxStringSize',
+        reader.position,
+      );
+    }
     final fieldName = _readUtf8(reader, length);
     final code = reader.readByte();
+    if (code > elementUint64) {
+      // Schema fields may use any element selector 0x00..0x0F (§12).
+      throw BtoonDecodeError(
+        'invalid schema element-type code 0x${code.toRadixString(16)}',
+        reader.position - 1,
+      );
+    }
     fields.add(BtoonSchemaField(
       fieldName,
       type: BtoonSchemaType.fromCode(code),
@@ -431,6 +565,40 @@ BtoonSchema _readSchema(BtoonReader reader, bool idUint16) {
     ));
   }
   return BtoonSchema(fields, id: id, name: name);
+}
+
+/// Validates an out-of-band schema against the embedded one (§15.1).
+void _validateSchemaMatches(
+  BtoonSchema supplied,
+  BtoonSchema embedded,
+  BtoonReader reader,
+) {
+  if (supplied.id != embedded.id) {
+    throw BtoonDecodeError(
+      'supplied schema "${supplied.name}" (id ${supplied.id}) does not match '
+      'the embedded schema "${embedded.name}" (id ${embedded.id})',
+      reader.position,
+    );
+  }
+  if (supplied.name != embedded.name ||
+      supplied.fields.length != embedded.fields.length) {
+    throw BtoonDecodeError(
+      'supplied schema "${supplied.name}" does not match the embedded '
+      'schema "${embedded.name}"',
+      reader.position,
+    );
+  }
+  for (var i = 0; i < supplied.fields.length; i++) {
+    final a = supplied.fields[i];
+    final b = embedded.fields[i];
+    if (a.name != b.name || a.code != b.code) {
+      throw BtoonDecodeError(
+        'supplied schema field ${i + 1} ("${a.name}") does not match the '
+        'embedded schema field ("${b.name}")',
+        reader.position,
+      );
+    }
+  }
 }
 
 // #endregion

@@ -171,9 +171,11 @@ void main() {
 
     test('TypedArray element widths', () {
       // tag(8) elemType(9) count(10..13) padLen(14) data
+      // Signed types win when a signed and unsigned type of the same width
+      // both fit (§17, §26.4).
       expect(btoonEncode([200, 250])[9], 0x01); // uint8
-      expect(btoonEncode([1000, 2000])[9], 0x03); // uint16
-      expect(btoonEncode([70000, 80000])[9], 0x05); // uint32
+      expect(btoonEncode([1000, 2000])[9], 0x02); // int16
+      expect(btoonEncode([70000, 80000])[9], 0x04); // int32
       expect(btoonEncode([-100, 50])[9], 0x00); // int8
       expect(btoonEncode([-1000, 2000])[9], 0x02); // int16
       expect(btoonEncode([-70000, 80000])[9], 0x04); // int32
@@ -331,7 +333,9 @@ void main() {
         {'id': 2, 'x': 2.5},
       ];
       final bytes = btoonEncode(rows);
-      expect(bytes[8], 0x0D); // tagObjectTable
+      // The column names land in the per-message string table (flag 0x04);
+      // the body itself starts after the aligned table.
+      expect(bytes[5] & 0x04, 0x04);
       expectRoundTrip(rows);
     });
 
@@ -380,10 +384,24 @@ void main() {
       expectRoundTrip(value);
     });
 
-    test('single-occurrence strings stay inline (no table)', () {
+    test('single-occurrence strings use the string table by default (§26.3)',
+        () {
       final bytes = btoonEncode({'a': 'once'});
-      expect(bytes[5] & 0x04, 0);
+      expect(bytes[5] & 0x04, 0x04);
       expectRoundTrip({'a': 'once'});
+    });
+
+    test('noStringTable keeps strings inline (§7.5.1, §26.3)', () {
+      final bytes = btoonEncode(
+        {'a': 'once'},
+        options: const BtoonEncodeOptions(noStringTable: true),
+      );
+      expect(bytes[5] & 0x04, 0); // no table flag
+      expect(bytes[5] & 0x10, 0); // no no-table flag without a session
+      // The body begins right after the header with an Object tag.
+      expect(bytes[8], 0x0A); // tagObject
+      expectRoundTrip({'a': 'once'},
+          encodeOptions: const BtoonEncodeOptions(noStringTable: true));
     });
 
     test('minStringTableFrequency = 1 puts every string in the table', () {
@@ -538,21 +556,41 @@ void main() {
       );
     });
 
-    test('decoding a schema-mode body with a mismatched schema id fails', () {
+    test('a tagged body with the schema flag cleared is rejected (§19)', () {
       final schema = BtoonSchema([
         const BtoonSchemaField('a', type: BtoonSchemaType.integer),
       ], id: 7, name: 'Seven');
       final bytes = btoonEncode({'a': 1},
           options: BtoonEncodeOptions(schema: schema, schemaMode: true));
-      // Simulate a message whose embedded schema was not transmitted: the
-      // body still begins with its SchemaID, which must match the supplied
-      // out-of-band schema.
+      // Flag 0x02 signals the body mode (§7.7): with the flag cleared the
+      // body is decoded as a tagged value, so the schema bytes cannot be
+      // misparsed — the decode must fail.
       bytes[5] = bytes[5] & ~0x02;
       final other = BtoonSchema([
         const BtoonSchemaField('a', type: BtoonSchemaType.integer),
       ], id: 99, name: 'Other');
       expect(
         () => btoonDecode(bytes, options: BtoonDecodeOptions(schema: other)),
+        throwsA(isA<BtoonDecodeError>()),
+      );
+    });
+
+    test('an out-of-band schema must match the embedded schema', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('a', type: BtoonSchemaType.integer),
+      ], id: 7, name: 'Seven');
+      final bytes = btoonEncode({'a': 1},
+          options: BtoonEncodeOptions(schema: schema, schemaMode: true));
+      // Matching schema: decodes fine.
+      expect(btoonDecode(bytes, options: BtoonDecodeOptions(schema: schema)),
+          {'a': 1});
+      // Mismatched field type: rejected.
+      final wrongFields = BtoonSchema([
+        const BtoonSchemaField('a', type: BtoonSchemaType.string),
+      ], id: 7, name: 'Seven');
+      expect(
+        () => btoonDecode(bytes,
+            options: BtoonDecodeOptions(schema: wrongFields)),
         throwsA(isA<BtoonDecodeError>()),
       );
     });

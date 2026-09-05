@@ -55,8 +55,14 @@ void main() {
         const BtoonSchemaField('g',
             type: BtoonSchemaType.integer, elementCode: c.elementUint32),
       ]);
-      final value = {'a': -128, 'b': 255, 'd': -32768, 'e': 65535,
-          'f': -2147483648, 'g': 4294967295};
+      final value = {
+        'a': -128,
+        'b': 255,
+        'd': -32768,
+        'e': 65535,
+        'f': -2147483648,
+        'g': 4294967295
+      };
       final bytes = btoonEncodeWithSchema(value, schema);
       expect(btoonDecodeWithSchema(bytes, schema), value);
     });
@@ -75,7 +81,9 @@ void main() {
         const BtoonSchemaField('blob', type: BtoonSchemaType.binary),
       ]);
       final bytes = btoonEncodeWithSchema(
-        {'blob': BtoonBinary(Uint8List.fromList([1, 2, 3]))},
+        {
+          'blob': BtoonBinary(Uint8List.fromList([1, 2, 3]))
+        },
         schema,
       );
       final decoded = btoonDecodeWithSchema(bytes, schema) as Map;
@@ -214,16 +222,25 @@ void main() {
       );
     });
 
-    test('ObjectTable columns must exist in the session dictionary', () {
+    test('ObjectTable column names outside the session go to the table (§14)',
+        () {
       final session = BtoonSession()..add('known');
+      final bytes = btoonEncode(
+        [
+          {'col': 1},
+        ],
+        options: BtoonEncodeOptions(session: session),
+      );
+      // The column name is not in the session dictionary, so it must be
+      // added to the per-message string table and referenced from there;
+      // the no-string-table flag (0x10) must not be set.
+      expect(bytes[5] & c.flagStringTable, c.flagStringTable);
+      expect(bytes[5] & c.flagNoStringTable, 0);
       expect(
-        () => btoonEncode(
-          [
-            {'col': 1},
-          ],
-          options: BtoonEncodeOptions(session: session),
-        ),
-        throwsA(isA<BtoonEncodeError>()),
+        btoonDecode(bytes, options: BtoonDecodeOptions(session: session)),
+        [
+          {'col': 1},
+        ],
       );
     });
   });
@@ -236,23 +253,28 @@ void main() {
         },
       });
       expect(
-        () => btoonDecode(bytes, options: const BtoonDecodeOptions(maxDepth: 1)),
+        () =>
+            btoonDecode(bytes, options: const BtoonDecodeOptions(maxDepth: 1)),
         throwsA(isA<BtoonDecodeError>()),
       );
     });
 
     test('preserveTypedArrays returns typed views', () {
       final bytes = btoonEncode([1, 2, 3]);
-      final decoded =
-          btoonDecode(bytes, options: const BtoonDecodeOptions(preserveTypedArrays: true));
+      final decoded = btoonDecode(bytes,
+          options: const BtoonDecodeOptions(preserveTypedArrays: true));
       expect(decoded, isA<BtoonTypedArray>());
     });
 
     test('string table can be disabled entirely', () {
-      final value = {'k${'x' * 40}': 'v${'y' * 40}', 'k2${'x' * 40}': 'v${'y' * 40}'};
+      final value = {
+        'k${'x' * 40}': 'v${'y' * 40}',
+        'k2${'x' * 40}': 'v${'y' * 40}'
+      };
       final bytes = btoonEncode(
         value,
-        options: const BtoonEncodeOptions(stringTable: BtoonStringTableMode.off),
+        options:
+            const BtoonEncodeOptions(stringTable: BtoonStringTableMode.off),
       );
       expect(btoonDecode(bytes), value);
     });
@@ -337,7 +359,8 @@ void main() {
 
     test('unknown custom element codes are rejected on encode', () {
       final schema = BtoonSchema([
-        const BtoonSchemaField('x', type: BtoonSchemaType.integer, elementCode: 0x7E),
+        const BtoonSchemaField('x',
+            type: BtoonSchemaType.integer, elementCode: 0x7E),
       ]);
       expect(
         () => btoonEncodeWithSchema({'x': 1}, schema),
@@ -349,28 +372,32 @@ void main() {
       expect(
         () => btoonEncodeWithSchema(
           {'f': 'str'},
-          BtoonSchema([const BtoonSchemaField('f', type: BtoonSchemaType.integer)]),
+          BtoonSchema(
+              [const BtoonSchemaField('f', type: BtoonSchemaType.integer)]),
         ),
         throwsA(isA<BtoonEncodeError>()),
       );
       expect(
         () => btoonEncodeWithSchema(
           {'f': 1},
-          BtoonSchema([const BtoonSchemaField('f', type: BtoonSchemaType.boolean)]),
+          BtoonSchema(
+              [const BtoonSchemaField('f', type: BtoonSchemaType.boolean)]),
         ),
         throwsA(isA<BtoonEncodeError>()),
       );
       expect(
         () => btoonEncodeWithSchema(
           {'f': 1},
-          BtoonSchema([const BtoonSchemaField('f', type: BtoonSchemaType.string)]),
+          BtoonSchema(
+              [const BtoonSchemaField('f', type: BtoonSchemaType.string)]),
         ),
         throwsA(isA<BtoonEncodeError>()),
       );
       expect(
         () => btoonEncodeWithSchema(
           {'f': 1},
-          BtoonSchema([const BtoonSchemaField('f', type: BtoonSchemaType.binary)]),
+          BtoonSchema(
+              [const BtoonSchemaField('f', type: BtoonSchemaType.binary)]),
         ),
         throwsA(isA<BtoonEncodeError>()),
       );
@@ -397,8 +424,7 @@ void main() {
     });
 
     test('accepts boundary values for each element type', () {
-      validateNumericRange(
-          [-128, 127], BtoonElementType.int8);
+      validateNumericRange([-128, 127], BtoonElementType.int8);
       validateNumericRange([0, 255], BtoonElementType.uint8);
       validateNumericRange([0, 65535], BtoonElementType.uint16);
       validateNumericRange([4294967295], BtoonElementType.uint32);

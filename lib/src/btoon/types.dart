@@ -109,6 +109,40 @@ class BtoonObjectTable {
   }
 }
 
+/// An application-defined extension value (§23).
+///
+/// Extension tags live in `0xF0`–`0xFF`; the payload layout is defined by
+/// the extension's registration. Decoders that do not implement an
+/// extension still skip its length-prefixed payload; this wrapper surfaces
+/// the raw payload so values round-trip through decode/encode unchanged.
+class BtoonExtension {
+  /// Extension tag, in the range `0xF0`–`0xFF`.
+  final int tag;
+
+  /// Raw payload bytes (the bytes after the `PayloadLength::UInt32`).
+  final Uint8List payload;
+
+  BtoonExtension(this.tag, this.payload) {
+    if (tag < 0xF0 || tag > 0xFF) {
+      throw ArgumentError.value(tag, 'tag', 'must be in the range 0xF0..0xFF');
+    }
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is BtoonExtension &&
+      other.tag == tag &&
+      other.payload.length == payload.length &&
+      _listEquals(other.payload, payload);
+
+  @override
+  int get hashCode => Object.hash(tag, Object.hashAll(payload));
+
+  @override
+  String toString() => 'BtoonExtension(0x${tag.toRadixString(16)}, '
+      '${payload.length} bytes)';
+}
+
 /// An optional string dictionary shared across encode/decode calls.
 ///
 /// When provided to an encoder, strings already in the dictionary are

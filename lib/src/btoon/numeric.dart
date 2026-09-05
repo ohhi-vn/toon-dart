@@ -9,6 +9,12 @@ import 'errors.dart';
 import 'io.dart';
 import 'types.dart';
 
+/// Returns [list] as a `List<num>` without copying when its runtime type is
+/// already compatible (`List<int>` / `List<double>` are subtypes); falls
+/// back to a lazy cast for heterogeneous `List<dynamic>` input.
+List<num> asNumList(List<dynamic> list) =>
+    list is List<num> ? list : list.cast<num>();
+
 /// Maps a [BtoonElementType] to its wire element selector (§12).
 int elementTagOf(BtoonElementType type) {
   switch (type) {
@@ -67,6 +73,9 @@ BtoonElementType elementTypeOf(int tag) {
 
 /// Returns the smallest lossless element type for a list of integers,
 /// or null if any value is not numeric or is out of the `int64` range.
+///
+/// When a signed and an unsigned type of the same width both fit, the
+/// signed type is used (§17, matching the §26.4 vector).
 BtoonElementType? bestIntElementType(List<dynamic> values) {
   var minValue = 0x7FFFFFFFFFFFFFFF;
   var maxValue = -0x8000000000000000;
@@ -77,35 +86,24 @@ BtoonElementType? bestIntElementType(List<dynamic> values) {
     if (i < minValue) minValue = i;
     if (i > maxValue) maxValue = i;
   }
-  if (minValue >= 0) {
-    if (maxValue <= 0xFF) return BtoonElementType.uint8;
-    if (maxValue <= 0xFFFF) return BtoonElementType.uint16;
-    if (maxValue <= 0xFFFFFFFF) return BtoonElementType.uint32;
-    return BtoonElementType.uint64;
-  }
-  if (minValue >= -128 && maxValue <= 127) return BtoonElementType.int8;
-  if (minValue >= -32768 && maxValue <= 32767) return BtoonElementType.int16;
-  if (minValue >= -2147483648 && maxValue <= 2147483647) {
-    return BtoonElementType.int32;
-  }
-  return BtoonElementType.int64;
+  return bestIntElementTypeForRange(minValue, maxValue);
 }
 
 /// Returns the smallest lossless element type covering the inclusive
 /// integer range [min], [max], or null when out of the `int64` range.
+///
+/// Types are probed narrowest-first, signed before unsigned of the same
+/// width (§17).
 BtoonElementType? bestIntElementTypeForRange(int min, int max) {
   if (!isInInt64Range(min) || !isInInt64Range(max)) return null;
-  if (min >= 0) {
-    if (max <= 0xFF) return BtoonElementType.uint8;
-    if (max <= 0xFFFF) return BtoonElementType.uint16;
-    if (max <= 0xFFFFFFFF) return BtoonElementType.uint32;
-    return BtoonElementType.uint64;
-  }
   if (min >= -128 && max <= 127) return BtoonElementType.int8;
+  if (min >= 0 && max <= 0xFF) return BtoonElementType.uint8;
   if (min >= -32768 && max <= 32767) return BtoonElementType.int16;
+  if (min >= 0 && max <= 0xFFFF) return BtoonElementType.uint16;
   if (min >= -2147483648 && max <= 2147483647) {
     return BtoonElementType.int32;
   }
+  if (min >= 0 && max <= 0xFFFFFFFF) return BtoonElementType.uint32;
   return BtoonElementType.int64;
 }
 
@@ -115,7 +113,8 @@ BtoonElementType? bestIntElementTypeForRange(int min, int max) {
 /// * all `double` → `float32` if every value survives a float32 round-trip,
 ///   otherwise `float64`;
 /// * mixed `num` → `float64`.
-BtoonElementType bestNumericElementType(List<num> values) {  var allInt = true;
+BtoonElementType bestNumericElementType(List<num> values) {
+  var allInt = true;
   var allDouble = true;
   for (final v in values) {
     if (v is int) {
@@ -179,13 +178,17 @@ List<Map<String, dynamic>> objectTableRows(List<dynamic> list) {
       .toList(growable: false);
 }
 
-/// Sorted union of all keys across [rows].
-List<String> objectTableFields(List<Map<String, dynamic>> rows) {
+/// Sorted union of all keys across [rows], ordered by UTF-8 byte
+/// sequence (§17).
+List<String> objectTableFields(List<Map<dynamic, dynamic>> rows) {
   final set = <String>{};
   for (final row in rows) {
-    set.addAll(row.keys);
+    for (final key in row.keys) {
+      if (key is String) set.add(key);
+    }
   }
-  final result = set.toList()..sort();
+  final result = set.toList();
+  sortUtf8(result);
   return result;
 }
 
@@ -193,50 +196,49 @@ List<String> objectTableFields(List<Map<String, dynamic>> rows) {
 /// returns an element type when the column is a homogeneous numeric column,
 /// or null for a general (tagged) column.
 ///
-/// Values are inspected in place — no intermediate column list is built.
+/// Values are inspected in place in a single pass — no intermediate column
+/// list is built. For integer columns the min/max range is tracked on the
+/// way; for double columns a float32 conversion buffer is built once and
+/// verified in a second tight loop.
 BtoonElementType? columnElementType(
-  List<Map<String, dynamic>> rows,
+  List<Map<dynamic, dynamic>> rows,
   String field,
 ) {
   if (rows.isEmpty) return null;
-  var sawNull = false;
   var sawInt = false;
   var sawDouble = false;
-  for (final row in rows) {
-    final value = row[field];
-    if (value == null) {
-      sawNull = true;
-    } else if (value is int) {
+  var intRangeInit = false;
+  var min = 0;
+  var max = 0;
+  Float32List? f32;
+  for (var i = 0; i < rows.length; i++) {
+    final value = rows[i][field];
+    if (value is int) {
       sawInt = true;
+      if (!sawDouble) {
+        if (!intRangeInit) {
+          min = max = value;
+          intRangeInit = true;
+        } else if (value < min) {
+          min = value;
+        } else if (value > max) {
+          max = value;
+        }
+      }
     } else if (value is double) {
       sawDouble = true;
+      final f = f32 ??= Float32List(rows.length);
+      f[i] = value;
     } else {
       return null;
     }
   }
-  if (sawNull) return null;
   if (sawInt && !sawDouble) {
-    var min = 0;
-    var max = 0;
-    var first = true;
-    for (final row in rows) {
-      final v = row[field] as int;
-      if (first) {
-        min = max = v;
-        first = false;
-      } else if (v < min) {
-        min = v;
-      } else if (v > max) {
-        max = v;
-      }
-    }
     return bestIntElementTypeForRange(min, max);
   }
   if (sawDouble && !sawInt) {
-    for (final row in rows) {
-      if (!isLosslessFloat32(row[field] as double)) {
-        return BtoonElementType.float64;
-      }
+    for (var i = 0; i < rows.length; i++) {
+      if (f32![i] != rows[i][field]) return BtoonElementType.float64;
     }
     return BtoonElementType.float32;
   }
@@ -245,12 +247,12 @@ BtoonElementType? columnElementType(
 
 /// Pre-computed ObjectTable layout.
 ///
-/// Rows are copied once from the source list and the field order plus
-/// per-column element types are resolved once, so encoding never has to
-/// re-validate or re-scan user data.
+/// The field order plus per-column element types are resolved once, so
+/// encoding never has to re-validate or re-scan user data. Rows reference
+/// the caller's maps directly (the encoder only reads them).
 class ObjectTablePlan {
-  /// Rows as `Map<String, dynamic>`.
-  final List<Map<String, dynamic>> rows;
+  /// Rows as raw maps with string keys (already validated).
+  final List<Map<dynamic, dynamic>> rows;
 
   /// Sorted union of all keys across [rows].
   final List<String> fields;
@@ -275,7 +277,7 @@ ObjectTablePlan? buildObjectTablePlan(List<dynamic> list) {
   final keySet = first.keys.toSet();
   if (keySet.isEmpty) return null;
 
-  final rows = <Map<String, dynamic>>[Map<String, dynamic>.from(first)];
+  final rows = <Map<dynamic, dynamic>>[first];
   for (var i = 1; i < list.length; i++) {
     final element = list[i];
     if (element is! Map) return null;
@@ -283,14 +285,10 @@ ObjectTablePlan? buildObjectTablePlan(List<dynamic> list) {
     for (final k in element.keys) {
       if (k is! String || !keySet.contains(k)) return null;
     }
-    rows.add(Map<String, dynamic>.from(element));
+    rows.add(element);
   }
 
-  final fieldSet = <String>{};
-  for (final row in rows) {
-    fieldSet.addAll(row.keys);
-  }
-  final fields = fieldSet.toList()..sort();
+  final fields = objectTableFields(rows);
 
   final columnTypes = <String, BtoonElementType>{};
   for (final field in fields) {
@@ -310,6 +308,42 @@ void writeRawNumericData(
   List<num> values,
   BtoonElementType type,
 ) {
+  // Fast path: already a typed buffer of the exact width — write it raw.
+  if (type == BtoonElementType.float64 && values is Float64List) {
+    writer.writeBytes(Uint8List.sublistView(values));
+    return;
+  }
+  if (type == BtoonElementType.float32 && values is Float32List) {
+    writer.writeBytes(Uint8List.sublistView(values));
+    return;
+  }
+  // Fast path: bulk-convert a plain int list through a typed list (native
+  // conversion loop) instead of writing element by element. Callers have
+  // already validated that every value fits [type], so wrapping on
+  // conversion cannot occur.
+  if (values is List<int>) {
+    switch (type) {
+      case BtoonElementType.int8:
+      case BtoonElementType.uint8:
+        writer.writeBytes(Uint8List.sublistView(Int8List.fromList(values)));
+        return;
+      case BtoonElementType.int16:
+      case BtoonElementType.uint16:
+        writer.writeBytes(Uint8List.sublistView(Int16List.fromList(values)));
+        return;
+      case BtoonElementType.int32:
+      case BtoonElementType.uint32:
+        writer.writeBytes(Uint8List.sublistView(Int32List.fromList(values)));
+        return;
+      case BtoonElementType.int64:
+      case BtoonElementType.uint64:
+        writer.writeBytes(Uint8List.sublistView(Int64List.fromList(values)));
+        return;
+      case BtoonElementType.float32:
+      case BtoonElementType.float64:
+        break;
+    }
+  }
   switch (type) {
     case BtoonElementType.int8:
       for (final value in values) {
@@ -359,37 +393,55 @@ void writeRawNumericData(
 }
 
 /// Reads [count] raw fixed-width values of [type].
+///
+/// The count is validated against the bytes actually available before any
+/// allocation, so a hostile count cannot trigger a huge allocation (§24).
+/// Numeric payloads are decoded in bulk through typed-data views over an
+/// exact-size copy of the raw buffer; `uint64` stays per-element because
+/// Dart has no native unsigned 64-bit read.
 List<num> readRawNumericData(
   BtoonReader reader,
   BtoonElementType type,
   int count,
 ) {
-  final result = List<num>.filled(count, 0);
-  for (var i = 0; i < count; i++) {
-    switch (type) {
-      case BtoonElementType.int8:
-        result[i] = reader.readByte().toSigned(8);
-      case BtoonElementType.int16:
-        result[i] = reader.readInt16();
-      case BtoonElementType.int32:
-        result[i] = reader.readInt32();
-      case BtoonElementType.int64:
-        result[i] = reader.readInt64();
-      case BtoonElementType.uint8:
-        result[i] = reader.readByte();
-      case BtoonElementType.uint16:
-        result[i] = reader.readUint16();
-      case BtoonElementType.uint32:
-        result[i] = reader.readUint32();
-      case BtoonElementType.uint64:
-        result[i] = reader.readUint64();
-      case BtoonElementType.float32:
-        result[i] = reader.readFloat32();
-      case BtoonElementType.float64:
-        result[i] = reader.readFloat64();
-    }
+  if (count > reader.remaining ~/ type.size) {
+    throw BtoonDecodeError(
+      'element count $count exceeds the ${reader.remaining} byte(s) '
+      'remaining for ${type.name} elements',
+      reader.position,
+    );
   }
-  return result;
+  if (count == 0) return const <num>[];
+  // An exact-size fresh buffer starts at byte offset 0, so typed-data views
+  // over it are always element-aligned regardless of how the message
+  // arrived.
+  final raw = reader.readBytes(count * type.size);
+  switch (type) {
+    case BtoonElementType.int8:
+      return Int8List.view(raw.buffer);
+    case BtoonElementType.uint8:
+      return raw;
+    case BtoonElementType.int16:
+      return Int16List.view(raw.buffer);
+    case BtoonElementType.uint16:
+      return Uint16List.view(raw.buffer);
+    case BtoonElementType.int32:
+      return Int32List.view(raw.buffer);
+    case BtoonElementType.uint32:
+      return Uint32List.view(raw.buffer);
+    case BtoonElementType.int64:
+      return Int64List.view(raw.buffer);
+    case BtoonElementType.float32:
+      return Float32List.view(raw.buffer);
+    case BtoonElementType.float64:
+      return Float64List.view(raw.buffer);
+    case BtoonElementType.uint64:
+      final result = List<num>.filled(count, 0);
+      for (var i = 0; i < count; i++) {
+        result[i] = reader.readUint64();
+      }
+      return result;
+  }
 }
 
 /// Validates that every value in [values] fits [type] (forced types only).
