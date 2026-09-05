@@ -31,7 +31,7 @@ library stream_decoder;
 
 import '../types.dart';
 import '../utilities/constants.dart';
-import '../utilities/string-utils.dart';
+import '../utilities/string_utils.dart';
 import '../utilities/numeric_utils.dart';
 import '../decode/scanners.dart';
 import '../decode/parser.dart';
@@ -122,7 +122,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null && headerResult.header.fields != null) {
         cursor.advance();
 
@@ -153,7 +153,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null &&
           headerResult.header.key == key &&
           headerResult.header.fields != null) {
@@ -196,7 +196,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null && headerResult.header.fields != null) {
         cursor.advance();
 
@@ -303,7 +303,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null && headerResult.header.fields != null) {
         cursor.advance();
 
@@ -374,7 +374,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null) {
         cursor.advance();
 
@@ -420,7 +420,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null && headerResult.header.key == key) {
         cursor.advance();
 
@@ -466,7 +466,7 @@ class ToonStreamDecoder {
       if (line == null || line.depth < itemDepth) break;
 
       final isListItem =
-          line.content.startsWith(LIST_ITEM_PREFIX) || line.content == '-';
+          line.content.startsWith(listItemPrefix) || line.content == '-';
 
       if (line.depth == itemDepth && isListItem) {
         cursor.advance();
@@ -477,7 +477,7 @@ class ToonStreamDecoder {
           continue;
         }
 
-        final afterHyphen = line.content.substring(LIST_ITEM_PREFIX.length);
+        final afterHyphen = line.content.substring(listItemPrefix.length);
 
         if (afterHyphen.trim().isEmpty) {
           yield <String, dynamic>{};
@@ -488,7 +488,7 @@ class ToonStreamDecoder {
         // Check for array header after hyphen
         if (isArrayHeaderAfterHyphen(afterHyphen)) {
           final arrayHeader =
-              parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER);
+              parseArrayHeaderLine(afterHyphen, defaultDelimiter);
           if (arrayHeader != null) {
             if (arrayHeader.inlineValues != null) {
               final values = parseDelimitedValues(
@@ -508,7 +508,9 @@ class ToonStreamDecoder {
 
                 if (rowLine.depth == rowDepth) {
                   if (_isKeyValueLine(
-                      rowLine.content, arrayHeader.header.delimiter)) break;
+                      rowLine.content, arrayHeader.header.delimiter)) {
+                    break;
+                  }
 
                   cursor.advance();
                   final values = parseDelimitedValues(
@@ -559,7 +561,7 @@ class ToonStreamDecoder {
             if (nextLine == null || nextLine.depth < siblingDepth) break;
 
             if (nextLine.depth == siblingDepth &&
-                !nextLine.content.startsWith(LIST_ITEM_PREFIX)) {
+                !nextLine.content.startsWith(listItemPrefix)) {
               cursor.advance();
               final pairKeyToken = parseKeyToken(nextLine.content, 0);
               final pairRest =
@@ -610,12 +612,16 @@ class ToonStreamDecoder {
     for (final row in decodeTabularRows()) {
       batch.add(row);
       if (batch.length >= batchSize) {
-        for (final r in batch) yield r;
+        for (final r in batch) {
+          yield r;
+        }
         batch.clear();
         await Future.microtask(() {}); // Single yield point per batch
       }
     }
-    for (final r in batch) yield r;
+    for (final r in batch) {
+      yield r;
+    }
   }
 
   /// Async stream of tabular rows with schema.
@@ -627,12 +633,16 @@ class ToonStreamDecoder {
     for (final row in decodeTabularRowsWithSchema(schema)) {
       batch.add(row);
       if (batch.length >= batchSize) {
-        for (final r in batch) yield r;
+        for (final r in batch) {
+          yield r;
+        }
         batch.clear();
         await Future.microtask(() {}); // Single yield point per batch
       }
     }
-    for (final r in batch) yield r;
+    for (final r in batch) {
+      yield r;
+    }
   }
 
   /// Async stream of list items.
@@ -641,12 +651,16 @@ class ToonStreamDecoder {
     for (final item in decodeListItems()) {
       batch.add(item);
       if (batch.length >= batchSize) {
-        for (final r in batch) yield r;
+        for (final r in batch) {
+          yield r;
+        }
         batch.clear();
         await Future.microtask(() {}); // Single yield point per batch
       }
     }
-    for (final r in batch) yield r;
+    for (final r in batch) {
+      yield r;
+    }
   }
 
   // #endregion
@@ -720,7 +734,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null && headerResult.header.fields != null) {
         cursor.advance();
         final rowDepth = 1;
@@ -731,8 +745,9 @@ class ToonStreamDecoder {
           if (rowLine == null || rowLine.depth < rowDepth) break;
 
           if (rowLine.depth == rowDepth) {
-            if (_isKeyValueLine(rowLine.content, headerResult.header.delimiter))
+            if (_isKeyValueLine(rowLine.content, headerResult.header.delimiter)) {
               break;
+            }
             cursor.advance();
             yield rowLine.content;
             rowCount++;
@@ -761,7 +776,7 @@ class ToonStreamDecoder {
       if (line == null) break;
 
       final headerResult =
-          parseArrayHeaderLine(line.content, DEFAULT_DELIMITER);
+          parseArrayHeaderLine(line.content, defaultDelimiter);
       if (headerResult != null && headerResult.header.fields != null) {
         cursor.advance();
         final rowDepth = 1;
@@ -794,7 +809,7 @@ class ToonStreamDecoder {
 
   /// Checks if a line is a key-value pair (not a tabular row).
   bool _isKeyValueLine(String content, String delimiter) {
-    final colonPos = findUnquotedChar(content, COLON);
+    final colonPos = findUnquotedChar(content, colon);
     final delimiterPos = findUnquotedChar(content, delimiter);
 
     if (colonPos == -1) return false;
@@ -867,7 +882,7 @@ class ToonStreamDecoder {
       if (token.length >= 2 && token.codeUnitAt(token.length - 1) == 0x22) {
         final content = token.substring(1, token.length - 1);
         // Process escape sequences if present
-        if (content.indexOf('\\') != -1) {
+        if (content.contains('\\')) {
           return _unescapeInline(content);
         }
         return content;
@@ -895,7 +910,7 @@ class ToonStreamDecoder {
   /// Throws FormatException for invalid escape sequences.
   String _unescapeInline(String value) {
     // Fast path: check if any unescaping is needed
-    int backslashPos = value.indexOf('\\');
+    final int backslashPos = value.indexOf('\\');
     if (backslashPos == -1) return value;
 
     final result = StringBuffer();
@@ -913,7 +928,7 @@ class ToonStreamDecoder {
 
       // Backslash found — check next character
       if (i + 1 >= value.length) {
-        throw FormatException(
+        throw const FormatException(
             'Invalid escape sequence: backslash at end of string');
       }
 

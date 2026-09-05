@@ -18,7 +18,7 @@ library parser;
 
 import '../types.dart';
 import '../utilities/constants.dart';
-import '../utilities/string-utils.dart';
+import '../utilities/string_utils.dart';
 import '../utilities/numeric_utils.dart';
 
 // #region Fast Numeric Literal Detection (No Regex)
@@ -182,7 +182,7 @@ List<TabularField> parseFieldEntries(String content, String delimiter) {
           braceDepth++;
           i++;
           // Find matching close brace
-          int braceStart = i;
+          final int braceStart = i;
           while (i < len) {
             final bc = content.codeUnitAt(i);
             if (bc == 0x5C && i + 1 < len) {
@@ -521,9 +521,9 @@ BracketSegmentResult parseBracketSegment(
     final afterKeyed = content.substring(keyedPos + 1);
     if (afterKeyed.isNotEmpty) {
       if (afterKeyed == '\t') {
-        delimiter = TAB;
+        delimiter = tab;
       } else if (afterKeyed == '|') {
-        delimiter = PIPE;
+        delimiter = pipe;
       } else {
         throw FormatException('Invalid delimiter in keyed bracket segment: $seg');
       }
@@ -534,10 +534,10 @@ BracketSegmentResult parseBracketSegment(
     if (content.isNotEmpty) {
       final lastChar = content.codeUnitAt(content.length - 1);
       if (lastChar == 0x09) {
-        delimiter = TAB;
+        delimiter = tab;
         content = content.substring(0, content.length - 1);
       } else if (lastChar == 0x7C) {
-        delimiter = PIPE;
+        delimiter = pipe;
         content = content.substring(0, content.length - 1);
       }
     }
@@ -872,17 +872,17 @@ String parseStringLiteral(String token) {
   final closingQuoteIndex = findClosingQuote(trimmedToken, 0);
 
   if (closingQuoteIndex == -1) {
-    throw FormatException('Unterminated string: missing closing quote');
+    throw const FormatException('Unterminated string: missing closing quote');
   }
 
   if (closingQuoteIndex != trimmedToken.length - 1) {
-    throw FormatException('Unexpected characters after closing quote');
+    throw const FormatException('Unexpected characters after closing quote');
   }
 
   final content = trimmedToken.substring(1, closingQuoteIndex);
 
   // Fast path: check if any unescaping is needed
-  if (content.indexOf('\\') == -1) {
+  if (!content.contains('\\')) {
     return content; // No escape sequences — return directly
   }
 
@@ -908,7 +908,7 @@ KeyTokenResult parseUnquotedKey(String content, int start) {
 
   // Validate that a colon was found
   if (end >= len) {
-    throw FormatException('Missing colon after key');
+    throw const FormatException('Missing colon after key');
   }
 
   final key = content.substring(start, end).trim();
@@ -928,7 +928,7 @@ KeyTokenResult parseQuotedKey(String content, int start) {
   final closingQuoteIndex = findClosingQuote(content, start);
 
   if (closingQuoteIndex == -1) {
-    throw FormatException('Unterminated quoted key');
+    throw const FormatException('Unterminated quoted key');
   }
 
   // Extract and unescape the key content
@@ -938,7 +938,7 @@ KeyTokenResult parseQuotedKey(String content, int start) {
 
   // Validate and skip colon after quoted key
   if (end >= content.length || content.codeUnitAt(end) != 0x3A) {
-    throw FormatException('Missing colon after key');
+    throw const FormatException('Missing colon after key');
   }
   end++;
 
@@ -979,7 +979,7 @@ bool isArrayHeaderAfterHyphen(String content) {
   }
 
   // Must contain ']' and ':' in the right order
-  return findUnquotedChar(content, COLON) != -1;
+  return findUnquotedChar(content, colon) != -1;
 }
 
 /// Checks if content is an object first field after a hyphen.
@@ -988,7 +988,7 @@ bool isArrayHeaderAfterHyphen(String content) {
 /// with code unit operations.
 @pragma('vm:prefer-inline')
 bool isObjectFirstFieldAfterHyphen(String content) {
-  return findUnquotedChar(content, COLON) != -1;
+  return findUnquotedChar(content, colon) != -1;
 }
 
 // #endregion
@@ -1131,7 +1131,7 @@ dynamic _parsePrimitiveInline(String token) {
     if (token.length >= 2 && token.codeUnitAt(token.length - 1) == 0x22) {
       // Fast path: simple quoted string with no escapes
       final content = token.substring(1, token.length - 1);
-      if (content.indexOf('\\') == -1) {
+      if (!content.contains('\\')) {
         return content;
       }
       return unescapeString(content);

@@ -54,7 +54,7 @@ class BenchmarkRunner {
     Duration? minDuration,
     int? maxIterations,
   }) async {
-    final targetDuration = minDuration ?? Duration(milliseconds: 500);
+    final targetDuration = minDuration ?? const Duration(milliseconds: 500);
     final maxIter = maxIterations ?? 1000000;
 
     // Warmup
@@ -136,7 +136,7 @@ class BenchmarkRunner {
     }
 
     // Performance comparison: Standard vs Schema vs Stream
-    stdout.writeln('${'=' * 100}');
+    stdout.writeln('=' * 100);
     stdout.writeln('PERFORMANCE COMPARISON: Standard vs Schema vs Stream');
     stdout.writeln('${'=' * 100}\n');
 
@@ -144,7 +144,7 @@ class BenchmarkRunner {
     _printComparison('Tabular 10000 rows', results);
 
     // Encode vs Decode comparison
-    stdout.writeln('${'=' * 100}');
+    stdout.writeln('=' * 100);
     stdout.writeln('ENCODE vs DECODE COMPARISON');
     stdout.writeln('${'=' * 100}\n');
 
@@ -186,28 +186,28 @@ class BenchmarkRunner {
       final speedup =
           schemaEncode.first.opsPerSec / standardEncode.first.opsPerSec;
       stdout.writeln(
-          '  ${prefix} Encode: Schema is ${speedup.toStringAsFixed(2)}x faster than Standard');
+          '  $prefix Encode: Schema is ${speedup.toStringAsFixed(2)}x faster than Standard');
     }
 
     if (standardDecode.isNotEmpty && schemaDecode.isNotEmpty) {
       final speedup =
           schemaDecode.first.opsPerSec / standardDecode.first.opsPerSec;
       stdout.writeln(
-          '  ${prefix} Decode: Schema is ${speedup.toStringAsFixed(2)}x faster than Standard');
+          '  $prefix Decode: Schema is ${speedup.toStringAsFixed(2)}x faster than Standard');
     }
 
     if (standardDecode.isNotEmpty && streamDecode.isNotEmpty) {
       final speedup =
           streamDecode.first.opsPerSec / standardDecode.first.opsPerSec;
       stdout.writeln(
-          '  ${prefix} Decode: Stream is ${speedup.toStringAsFixed(2)}x vs Standard (ops/s)');
+          '  $prefix Decode: Stream is ${speedup.toStringAsFixed(2)}x vs Standard (ops/s)');
     }
 
     if (streamDecode.isNotEmpty && streamSchemaDecode.isNotEmpty) {
       final speedup =
           streamSchemaDecode.first.opsPerSec / streamDecode.first.opsPerSec;
       stdout.writeln(
-          '  ${prefix} Decode: Stream+Schema is ${speedup.toStringAsFixed(2)}x faster than Stream alone');
+          '  $prefix Decode: Stream+Schema is ${speedup.toStringAsFixed(2)}x faster than Stream alone');
     }
 
     stdout.writeln();
@@ -406,8 +406,8 @@ Future<void> main(List<String> args) async {
   stdout.writeln('');
 
   final minDur =
-      quick ? Duration(milliseconds: 100) : Duration(milliseconds: 500);
-  final minDurLong = quick ? Duration(milliseconds: 200) : Duration(seconds: 1);
+      quick ? const Duration(milliseconds: 100) : const Duration(milliseconds: 500);
+  final minDurLong = quick ? const Duration(milliseconds: 200) : const Duration(seconds: 1);
 
   // =========================================================================
   // 1. Simple object benchmarks
@@ -614,10 +614,10 @@ Future<void> main(List<String> args) async {
 
   final intKeyedSchema = IntKeyedSchema(
     fields: [
-      SchemaField(name: 'id', type: SchemaFieldType.integer),
-      SchemaField(name: 'status'),
-      SchemaField(name: 'category'),
-      SchemaField(name: 'priority', type: SchemaFieldType.integer),
+      const SchemaField(name: 'id', type: SchemaFieldType.integer),
+      const SchemaField(name: 'status'),
+      const SchemaField(name: 'category'),
+      const SchemaField(name: 'priority', type: SchemaFieldType.integer),
     ],
     enumMappings: {
       'status': {0: 'pending', 1: 'active', 2: 'closed'},

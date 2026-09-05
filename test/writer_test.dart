@@ -1,7 +1,6 @@
 import 'package:test/test.dart';
-import 'package:toon_format/toon_format.dart';
 
-import '../lib/src/encode/writer.dart';
+import 'package:toon_format/src/encode/writer.dart';
 
 void main() {
   group('LineWriter', () {

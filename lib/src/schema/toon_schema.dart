@@ -864,7 +864,7 @@ List<String> _parseDelimitedFast(String input, String delimiter) {
 /// Throws FormatException for invalid escape sequences.
 String _unescapeFast(String value) {
   // Fast path: check if any unescaping is needed
-  int backslashPos = value.indexOf('\\');
+  final int backslashPos = value.indexOf('\\');
   if (backslashPos == -1) return value;
 
   final result = StringBuffer();
@@ -882,7 +882,7 @@ String _unescapeFast(String value) {
 
     // Backslash found — check next character
     if (i + 1 >= value.length) {
-      throw FormatException(
+      throw const FormatException(
           'Invalid escape sequence: backslash at end of string');
     }
 
@@ -931,7 +931,7 @@ dynamic _parsePrimitiveFast(String token) {
     if (token.length >= 2 && token.codeUnitAt(token.length - 1) == 0x22) {
       final content = token.substring(1, token.length - 1);
       // Process escape sequences if present
-      if (content.indexOf('\\') != -1) {
+      if (content.contains('\\')) {
         return _unescapeFast(content);
       }
       return content;

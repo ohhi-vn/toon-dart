@@ -1,8 +1,7 @@
 import 'package:test/test.dart';
-import 'package:toon_format/toon_format.dart';
 
-import '../lib/src/encode/normalize.dart';
-import '../lib/src/types.dart';
+import 'package:toon_format/src/encode/normalize.dart';
+import 'package:toon_format/src/types.dart';
 
 void main() {
   group('normalizeValue', () {

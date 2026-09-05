@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
 import 'package:test/test.dart';
-import '../lib/toon_format.dart';
+import 'package:toon_format/toon_format.dart';
 
 /// Test fixture structure
 class TestFixture {

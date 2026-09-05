@@ -50,8 +50,8 @@ void main() {
 
     test('direct constructor creates schema with fields', () {
       final schema = ConcreteSchema([
-        SchemaField(name: 'id', type: SchemaFieldType.integer),
-        SchemaField(name: 'name', type: SchemaFieldType.string),
+        const SchemaField(name: 'id', type: SchemaFieldType.integer),
+        const SchemaField(name: 'name', type: SchemaFieldType.string),
       ]);
       expect(schema.fieldNames, equals(['id', 'name']));
       expect(schema.fields[0].type, equals(SchemaFieldType.integer));
@@ -188,8 +188,8 @@ void main() {
   group('IntKeyedSchema', () {
     final schema = IntKeyedSchema(
       fields: [
-        SchemaField(name: 'id', type: SchemaFieldType.integer),
-        SchemaField(name: 'status'),
+        const SchemaField(name: 'id', type: SchemaFieldType.integer),
+        const SchemaField(name: 'status'),
       ],
       enumMappings: {
         'status': {0: 'pending', 1: 'active', 2: 'closed'},

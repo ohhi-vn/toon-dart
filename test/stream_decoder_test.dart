@@ -543,7 +543,7 @@ void main() {
     test('unescapes tab, carriage return, backslash', () {
       final schema = ConcreteSchema.fromNames(['a', 'b', 'c']);
       final stream = ToonStreamDecoder(
-          't[1]{a,b,c}:' + '\n  "x\\ty",' + r'"x\ry",' + r'"x\\y"');
+          't[1]{a,b,c}:' '\n  "x\\ty",' r'"x\ry",' r'"x\\y"');
       expect(
         stream.decodeTabularRowsWithSchema(schema).toList(),
         equals([

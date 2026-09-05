@@ -294,7 +294,7 @@ String _formatTabularArrayHeader(
     buffer.write(options.lengthMarker);
   }
   buffer.write(length);
-  if (delimiter != DEFAULT_DELIMITER) {
+  if (delimiter != defaultDelimiter) {
     buffer.write(delimiter);
   }
   buffer.write(']');
@@ -483,7 +483,7 @@ void encodeObjectAsListItem(JsonObject obj, LineWriter writer, Depth depth,
     ResolvedEncodeOptions options) {
   final keys = obj.keys.toList();
   if (keys.isEmpty) {
-    writer.push(depth, LIST_ITEM_MARKER);
+    writer.push(depth, listItemMarker);
     return;
   }
 
@@ -663,7 +663,7 @@ String _formatKeyedHeader(
   buffer.write('[');
   buffer.write(length);
   buffer.write(':');
-  if (delimiter != DEFAULT_DELIMITER) {
+  if (delimiter != defaultDelimiter) {
     buffer.write(delimiter);
   }
   buffer.write(']');

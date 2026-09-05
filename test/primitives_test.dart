@@ -1,9 +1,8 @@
 import 'package:test/test.dart';
-import 'package:toon_format/toon_format.dart';
 
-import '../lib/src/encode/encoders.dart';
-import '../lib/src/encode/primitives.dart';
-import '../lib/src/types.dart';
+import 'package:toon_format/src/encode/encoders.dart';
+import 'package:toon_format/src/encode/primitives.dart';
+import 'package:toon_format/src/types.dart';
 
 void main() {
   group('encodePrimitive', () {

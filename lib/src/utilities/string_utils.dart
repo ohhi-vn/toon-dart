@@ -1,5 +1,5 @@
 import '../utilities/constants.dart';
-import 'literal-utils.dart';
+import 'literal_utils.dart';
 
 // #region Fast Space-Only Trimming
 
@@ -97,7 +97,7 @@ String escapeString(String value) {
 /// Performance: ~1.5-2x faster for strings with many escape sequences.
 String unescapeString(String value) {
   // Fast path: check if any unescaping is needed
-  int backslashPos = value.indexOf('\\');
+  final int backslashPos = value.indexOf('\\');
   if (backslashPos == -1) return value;
 
   final result = StringBuffer();
@@ -115,7 +115,7 @@ String unescapeString(String value) {
 
     // Backslash found — check next character
     if (i + 1 >= value.length) {
-      throw FormatException(
+      throw const FormatException(
           'Invalid escape sequence: backslash at end of string');
     }
 
@@ -144,7 +144,7 @@ String unescapeString(String value) {
       case 0x75: // 'u'
         // \uXXXX — 4 hex digits
         if (i + 5 >= value.length) {
-          throw FormatException('Invalid \\u escape sequence: not enough digits');
+          throw const FormatException('Invalid \\u escape sequence: not enough digits');
         }
         final hexStr = value.substring(i + 2, i + 6);
         final codePoint = int.tryParse(hexStr, radix: 16);
@@ -154,7 +154,7 @@ String unescapeString(String value) {
         // Reject lone surrogate code points (0xD800-0xDFFF)
         if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
           throw FormatException(
-              'Invalid \\u escape sequence: surrogate code point 0x${hexStr}');
+              'Invalid \\u escape sequence: surrogate code point 0x$hexStr');
         }
         result.writeCharCode(codePoint);
         i += 6;
@@ -328,7 +328,7 @@ bool isValidUnquotedKey(String key) {
 /// This avoids regex compilation and matching overhead (~3-8x faster).
 ///
 /// Performance: O(n) single pass, no regex engine overhead.
-bool isSafeUnquoted(String value, [String delimiter = COMMA]) {
+bool isSafeUnquoted(String value, [String delimiter = comma]) {
   if (value.isEmpty) {
     return false;
   }

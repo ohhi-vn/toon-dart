@@ -100,7 +100,7 @@ void main() {
 
     test('should quote strings with delimiter', () {
       final result =
-          encode({'tags': 'a,b,c'}, options: EncodeOptions(delimiter: ','));
+          encode({'tags': 'a,b,c'}, options: const EncodeOptions(delimiter: ','));
       expect(result, equals('tags: "a,b,c"'));
     });
 
@@ -141,14 +141,14 @@ void main() {
     test('should encode primitive array with tab delimiter', () {
       final result = encode({
         'tags': ['a', 'b', 'c']
-      }, options: EncodeOptions(delimiter: '\t'));
+      }, options: const EncodeOptions(delimiter: '\t'));
       expect(result, equals('tags[3\t]: a\tb\tc'));
     });
 
     test('should encode primitive array with pipe delimiter', () {
       final result = encode({
         'tags': ['a', 'b', 'c']
-      }, options: EncodeOptions(delimiter: '|'));
+      }, options: const EncodeOptions(delimiter: '|'));
       expect(result, equals('tags[3|]: a|b|c'));
     });
 
@@ -354,7 +354,7 @@ void main() {
     test('should error on indentation not multiple of indentSize', () {
       expect(
         () => decode('name: Alice\n   age: 30',
-            options: DecodeOptions(indent: 2, strict: true)),
+            options: const DecodeOptions(indent: 2, strict: true)),
         throwsA(isA<FormatException>()),
       );
     });
@@ -362,7 +362,7 @@ void main() {
     test('should error on tabs in indentation', () {
       expect(
         () => decode('name: Alice\n\tage: 30',
-            options: DecodeOptions(indent: 2, strict: true)),
+            options: const DecodeOptions(indent: 2, strict: true)),
         throwsA(isA<FormatException>()),
       );
     });
@@ -370,7 +370,7 @@ void main() {
     test('should error on blank lines inside arrays', () {
       final input = 'items[3]:\n  a\n\n  b\n  c';
       expect(
-        () => decode(input, options: DecodeOptions(strict: true)),
+        () => decode(input, options: const DecodeOptions(strict: true)),
         throwsA(anyOf(isA<FormatException>(), isA<RangeError>())),
       );
     });

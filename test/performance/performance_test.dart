@@ -220,8 +220,8 @@ void main() {
       test('encodeMap replaces string values with int codes', () {
         final schema = IntKeyedSchema(
           fields: [
-            SchemaField(name: 'id', type: SchemaFieldType.integer),
-            SchemaField(name: 'status'),
+            const SchemaField(name: 'id', type: SchemaFieldType.integer),
+            const SchemaField(name: 'status'),
           ],
           enumMappings: {
             'status': {0: 'pending', 1: 'active', 2: 'closed'},
@@ -236,8 +236,8 @@ void main() {
       test('decodeList replaces int codes with string values', () {
         final schema = IntKeyedSchema(
           fields: [
-            SchemaField(name: 'id', type: SchemaFieldType.integer),
-            SchemaField(name: 'status'),
+            const SchemaField(name: 'id', type: SchemaFieldType.integer),
+            const SchemaField(name: 'status'),
           ],
           enumMappings: {
             'status': {0: 'pending', 1: 'active', 2: 'closed'},
@@ -252,8 +252,8 @@ void main() {
       test('encodeMap passes through unmapped values', () {
         final schema = IntKeyedSchema(
           fields: [
-            SchemaField(name: 'id', type: SchemaFieldType.integer),
-            SchemaField(name: 'status'),
+            const SchemaField(name: 'id', type: SchemaFieldType.integer),
+            const SchemaField(name: 'status'),
           ],
           enumMappings: {
             'status': {0: 'pending', 1: 'active'},
@@ -268,8 +268,8 @@ void main() {
       test('decodeList passes through unmapped int values', () {
         final schema = IntKeyedSchema(
           fields: [
-            SchemaField(name: 'id', type: SchemaFieldType.integer),
-            SchemaField(name: 'priority', type: SchemaFieldType.integer),
+            const SchemaField(name: 'id', type: SchemaFieldType.integer),
+            const SchemaField(name: 'priority', type: SchemaFieldType.integer),
           ],
           enumMappings: {
             'status': {0: 'pending'},
@@ -284,9 +284,9 @@ void main() {
       test('roundtrip encode then decode preserves data', () {
         final schema = IntKeyedSchema(
           fields: [
-            SchemaField(name: 'id', type: SchemaFieldType.integer),
-            SchemaField(name: 'status'),
-            SchemaField(name: 'category'),
+            const SchemaField(name: 'id', type: SchemaFieldType.integer),
+            const SchemaField(name: 'status'),
+            const SchemaField(name: 'category'),
           ],
           enumMappings: {
             'status': {0: 'pending', 1: 'active', 2: 'closed'},
@@ -822,8 +822,8 @@ void main() {
     test('int-keyed schema roundtrip', () {
       final schema = IntKeyedSchema(
         fields: [
-          SchemaField(name: 'id', type: SchemaFieldType.integer),
-          SchemaField(name: 'status'),
+          const SchemaField(name: 'id', type: SchemaFieldType.integer),
+          const SchemaField(name: 'status'),
         ],
         enumMappings: {
           'status': {0: 'pending', 1: 'active', 2: 'closed'},
@@ -1059,9 +1059,9 @@ void main() {
     test('int-keyed schema with multiple enum fields', () {
       final schema = IntKeyedSchema(
         fields: [
-          SchemaField(name: 'status'),
-          SchemaField(name: 'priority'),
-          SchemaField(name: 'category'),
+          const SchemaField(name: 'status'),
+          const SchemaField(name: 'priority'),
+          const SchemaField(name: 'category'),
         ],
         enumMappings: {
           'status': {0: 'new', 1: 'in-progress', 2: 'done'},

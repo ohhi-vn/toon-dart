@@ -1,6 +1,6 @@
 import '../types.dart';
 import '../utilities/constants.dart';
-import '../utilities/string-utils.dart';
+import '../utilities/string_utils.dart';
 import 'parser.dart';
 import 'scanners.dart';
 import 'validation.dart';
@@ -34,7 +34,7 @@ JsonValue decodeValueFromLines(
   }
   // Check for keyless keyed header [N:<delim?>]{fields}: at root (§9.5)
   if (_isKeylessKeyedHeader(first.content)) {
-    final headerInfo = parseArrayHeaderLine(first.content, DEFAULT_DELIMITER);
+    final headerInfo = parseArrayHeaderLine(first.content, defaultDelimiter);
     if (headerInfo != null && headerInfo.header.isKeyed) {
       cursor.advance();
       final result = decodeKeyedTabularObject(
@@ -44,7 +44,7 @@ JsonValue decodeValueFromLines(
     }
   }
   if (_isRootArrayHeader(first.content)) {
-    final headerInfo = parseArrayHeaderLine(first.content, DEFAULT_DELIMITER);
+    final headerInfo = parseArrayHeaderLine(first.content, defaultDelimiter);
     if (headerInfo != null) {
       // Strict-mode: keyless fields-bearing header carries no inline content (§6)
       if (options.strict &&
@@ -214,7 +214,7 @@ bool isKeyValueLine(ParsedLine line) {
   }
 
   // Look for unquoted colon
-  final colonPos = findUnquotedChar(content, COLON);
+  final colonPos = findUnquotedChar(content, colon);
   if (colonPos == -1) {
     return false;
   }
@@ -233,7 +233,7 @@ bool isKeyValueLine(ParsedLine line) {
   }
 
   // Valid key: either quoted or any non-empty token before the colon
-  if (keyPart.startsWith(DOUBLE_QUOTE)) {
+  if (keyPart.startsWith(doubleQuote)) {
     // Quoted key - must have closing quote
     final closingQuoteIndex = findClosingQuote(keyPart, 0);
     return closingQuoteIndex != -1 && closingQuoteIndex == keyPart.length - 1;
@@ -312,12 +312,12 @@ KeyValueResult decodeKeyValue(
 ) {
   // Fast path: lines without any '[' cannot be array headers and cannot
   // look like malformed headers, so skip both scans entirely.
-  if (content.indexOf('[') == -1) {
+  if (!content.contains('[')) {
     return _decodePlainKeyValue(content, cursor, baseDepth, options);
   }
 
   // Check for array header first (before parsing key)
-  final arrayHeader = parseArrayHeaderLine(content, DEFAULT_DELIMITER);
+  final arrayHeader = parseArrayHeaderLine(content, defaultDelimiter);
   if (arrayHeader != null && arrayHeader.header.key != null) {
     // Strict-mode: reject duplicate field names at any field-list level
     if (options.strict && _hasDuplicateFieldNames(arrayHeader.header)) {
@@ -369,7 +369,7 @@ KeyValueResult decodeKeyValue(
   // In strict mode, reject content that looks like a malformed array header
   // (§6: extra content between bracket segment and colon)
   if (options.strict && _looksLikeMalformedArrayHeader(content)) {
-    throw FormatException(
+    throw const FormatException(
         'Invalid array header: extra content between bracket and colon');
   }
 
@@ -500,13 +500,11 @@ List<JsonValue> decodeListArray(
 
     // Check for list item (with or without space after hyphen)
     final isListItem =
-        line.content.startsWith(LIST_ITEM_PREFIX) || line.content == '-';
+        line.content.startsWith(listItemPrefix) || line.content == '-';
 
     if (line.depth == itemDepth && isListItem) {
       // Track first and last item line numbers
-      if (startLine == null) {
-        startLine = line.lineNumber;
-      }
+      startLine ??= line.lineNumber;
       endLine = line.lineNumber;
 
       final item = decodeListItem(cursor, itemDepth, options);
@@ -627,7 +625,7 @@ List<JsonObject> decodeTabularArray(
 /// - Delimiter before colon → row
 /// - Colon before delimiter → key-value line
 bool _isKeyValueLine(String content, String delimiter) {
-  final colonPos = findUnquotedChar(content, COLON);
+  final colonPos = findUnquotedChar(content, colon);
   final delimiterPos = findUnquotedChar(content, delimiter);
 
   // No colon = definitely a row
@@ -663,7 +661,7 @@ JsonValue decodeListItem(
   if (line.content == '-') {
     return <String, JsonValue>{};
   }
-  afterHyphen = line.content.substring(LIST_ITEM_PREFIX.length);
+  afterHyphen = line.content.substring(listItemPrefix.length);
 
   // Empty content after list item should also be an empty object
   if (afterHyphen.trim().isEmpty) {
@@ -672,7 +670,7 @@ JsonValue decodeListItem(
 
   // Check for array header after hyphen
   if (isArrayHeaderAfterHyphen(afterHyphen)) {
-    final arrayHeader = parseArrayHeaderLine(afterHyphen, DEFAULT_DELIMITER);
+    final arrayHeader = parseArrayHeaderLine(afterHyphen, defaultDelimiter);
     if (arrayHeader != null) {
       // Strict-mode: keyless fields-bearing header as a list item is invalid (§6)
       if (options.strict &&
@@ -711,7 +709,7 @@ JsonObject decodeObjectFromListItem(
   Depth baseDepth,
   ResolvedDecodeOptions options,
 ) {
-  final afterHyphen = firstLine.content.substring(LIST_ITEM_PREFIX.length);
+  final afterHyphen = firstLine.content.substring(listItemPrefix.length);
 
   // Per TOON spec §10: When first field of list-item object is an array,
   // array contents (rows or items) are at depth +2 from hyphen line.
@@ -734,7 +732,7 @@ JsonObject decodeObjectFromListItem(
     }
 
     if (line.depth == siblingDepth &&
-        !line.content.startsWith(LIST_ITEM_PREFIX)) {
+        !line.content.startsWith(listItemPrefix)) {
       // Check if this is a key-value line (not a tabular row)
       // Tabular rows would be at depth +2, so we only process depth +1 here
       final pair = decodeKeyValuePair(line, cursor, siblingDepth, options);
@@ -774,7 +772,7 @@ JsonObject _assignCellsToFields(
   bool strict = false,
 }) {
   final obj = <String, JsonValue>{};
-  final used = _assignCells(cells, fields, obj, 0);
+  _assignCells(cells, fields, obj, 0);
   if (strict && cells.length != expectedLeafCount) {
     throw FormatException(
         'Expected $expectedLeafCount cells, but got ${cells.length}');
@@ -831,7 +829,7 @@ JsonObject decodeKeyedTabularObject(
       startLine ??= line.lineNumber;
 
       // Parse entry row: split at first unquoted colon → entry key + cells
-      final colonPos = findUnquotedChar(line.content, COLON);
+      final colonPos = findUnquotedChar(line.content, colon);
       if (colonPos == -1) {
         if (options.strict) {
           throw FormatException(

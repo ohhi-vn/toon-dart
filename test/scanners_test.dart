@@ -1,8 +1,6 @@
 import 'package:test/test.dart';
-import 'package:toon_format/toon_format.dart';
 
-import '../lib/src/decode/scanners.dart';
-import '../lib/src/utilities/constants.dart';
+import 'package:toon_format/src/decode/scanners.dart';
 
 void main() {
   group('toParsedLines', () {

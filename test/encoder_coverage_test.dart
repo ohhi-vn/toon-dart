@@ -1,9 +1,8 @@
 import 'package:test/test.dart';
-import 'package:toon_format/toon_format.dart';
 
-import '../lib/src/encode/encoders.dart';
-import '../lib/src/encode/writer.dart';
-import '../lib/src/types.dart';
+import 'package:toon_format/src/encode/encoders.dart';
+import 'package:toon_format/src/encode/writer.dart';
+import 'package:toon_format/src/types.dart';
 
 void main() {
   const opts = ResolvedEncodeOptions(indent: 2, delimiter: ',');
@@ -165,8 +164,8 @@ void main() {
     test('encodes array of objects with tabular format', () {
       final writer = LineWriter(2);
       final fields = [
-        TabularField('id', null),
-        TabularField('name', null),
+        const TabularField('id', null),
+        const TabularField('name', null),
       ];
       encodeArrayOfObjectsAsTabular(
         'users',

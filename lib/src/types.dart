@@ -1,4 +1,5 @@
 /// Type definitions for TOON format encoding and decoding.
+library;
 
 /// JSON primitive types (string, number, boolean, null).
 typedef JsonPrimitive = Object?; // null, String, num, bool

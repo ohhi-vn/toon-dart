@@ -1,6 +1,6 @@
 import '../types.dart';
 import '../utilities/constants.dart';
-import '../utilities/string-utils.dart';
+import '../utilities/string_utils.dart';
 
 // #region Primitive encoding
 
@@ -8,7 +8,7 @@ import '../utilities/string-utils.dart';
 @pragma('vm:prefer-inline')
 String encodePrimitive(JsonPrimitive value, [String? delimiter]) {
   if (value == null) {
-    return NULL_LITERAL;
+    return nullLiteral;
   }
 
   if (value is bool) {
@@ -19,7 +19,7 @@ String encodePrimitive(JsonPrimitive value, [String? delimiter]) {
     return _encodeNumber(value);
   }
 
-  return encodeStringLiteral(value as String, delimiter ?? COMMA);
+  return encodeStringLiteral(value as String, delimiter ?? comma);
 }
 
 /// Encodes a number in canonical form per TOON spec §2.
@@ -45,7 +45,7 @@ String _encodeNumber(num value) {
 
     // Handle non-finite values (should be normalized to null before encoding)
     if (!d.isFinite) {
-      return NULL_LITERAL;
+      return nullLiteral;
     }
 
     // Check if within canonical decimal range
@@ -73,12 +73,12 @@ String _encodeNumber(num value) {
 
 /// Encodes a string literal, adding quotes if necessary.
 @pragma('vm:prefer-inline')
-String encodeStringLiteral(String value, [String delimiter = COMMA]) {
+String encodeStringLiteral(String value, [String delimiter = comma]) {
   if (isSafeUnquoted(value, delimiter)) {
     return value;
   }
 
-  return '$DOUBLE_QUOTE${escapeString(value)}$DOUBLE_QUOTE';
+  return '$doubleQuote${escapeString(value)}$doubleQuote';
 }
 
 // #endregion
@@ -92,7 +92,7 @@ String encodeKey(String key) {
     return key;
   }
 
-  return '$DOUBLE_QUOTE${escapeString(key)}$DOUBLE_QUOTE';
+  return '$doubleQuote${escapeString(key)}$doubleQuote';
 }
 
 // #endregion
@@ -102,7 +102,7 @@ String encodeKey(String key) {
 /// Encodes and joins primitive values with a delimiter.
 /// Optimized to use StringBuffer and avoid intermediate list creation.
 String encodeAndJoinPrimitives(List<JsonPrimitive> values,
-    [String delimiter = COMMA]) {
+    [String delimiter = comma]) {
   if (values.isEmpty) return '';
   if (values.length == 1) return encodePrimitive(values[0], delimiter);
 
@@ -129,7 +129,7 @@ String formatHeader(
   String? delimiter,
   String? lengthMarker,
 }) {
-  final delimiterValue = delimiter ?? COMMA;
+  final delimiterValue = delimiter ?? comma;
   final lengthMarkerValue = lengthMarker ?? '';
 
   final buffer = StringBuffer();
@@ -140,7 +140,7 @@ String formatHeader(
 
   // Only include delimiter if it's not the default (comma)
   final delimiterSuffix =
-      delimiterValue != DEFAULT_DELIMITER ? delimiterValue : '';
+      delimiterValue != defaultDelimiter ? delimiterValue : '';
   buffer.write('[');
   buffer.write(lengthMarkerValue);
   buffer.write(length);

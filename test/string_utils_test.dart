@@ -1,8 +1,7 @@
 import 'package:test/test.dart';
-import 'package:toon_format/toon_format.dart';
 
-import '../lib/src/utilities/literal-utils.dart';
-import '../lib/src/utilities/string-utils.dart';
+import 'package:toon_format/src/utilities/literal_utils.dart';
+import 'package:toon_format/src/utilities/string_utils.dart';
 
 void main() {
   group('isNumericLiteral', () {

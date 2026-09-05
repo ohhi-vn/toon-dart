@@ -1,9 +1,8 @@
 import 'package:test/test.dart';
-import 'package:toon_format/toon_format.dart';
 
-import '../lib/src/decode/scanners.dart';
-import '../lib/src/decode/validation.dart';
-import '../lib/src/types.dart';
+import 'package:toon_format/src/decode/scanners.dart';
+import 'package:toon_format/src/decode/validation.dart';
+import 'package:toon_format/src/types.dart';
 
 void main() {
   const strict = ResolvedDecodeOptions(indent: 2, strict: true);

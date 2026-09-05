@@ -13,7 +13,7 @@ library scanners;
 
 import '../types.dart';
 import '../utilities/constants.dart';
-import '../utilities/string-utils.dart';
+import '../utilities/string_utils.dart';
 
 // #region Scan Result
 
@@ -468,7 +468,7 @@ BatchScanResult toParsedLinesClassified(
   final types = <LineType>[];
 
   for (final line in scanResult.lines) {
-    types.add(classifyLine(line.content, DEFAULT_DELIMITER));
+    types.add(classifyLine(line.content, defaultDelimiter));
   }
 
   return BatchScanResult(

@@ -205,7 +205,7 @@ class LineWriter {
       _buffer.write(lengthMarker);
     }
     _buffer.write(length);
-    if (delimiter != DEFAULT_DELIMITER) {
+    if (delimiter != defaultDelimiter) {
       _buffer.write(delimiter);
     }
     _buffer.write(']');

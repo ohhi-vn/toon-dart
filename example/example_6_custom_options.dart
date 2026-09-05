@@ -1,4 +1,4 @@
-import '../lib/toon_format.dart';
+import 'package:toon_format/toon_format.dart';
 
 void main() {
   print('=== 6. Custom Encoding Options ===\n');
@@ -17,27 +17,27 @@ void main() {
   
   // Tab delimiter
   print('Tab delimiter:');
-  print(encode(data, options: EncodeOptions(delimiter: '\t')));
+  print(encode(data, options: const EncodeOptions(delimiter: '\t')));
   print('');
   
   // Pipe delimiter
   print('Pipe delimiter:');
-  print(encode(data, options: EncodeOptions(delimiter: '|')));
+  print(encode(data, options: const EncodeOptions(delimiter: '|')));
   print('');
   
   // With length marker
   print('With length marker (#):');
-  print(encode(data, options: EncodeOptions(lengthMarker: '#')));
+  print(encode(data, options: const EncodeOptions(lengthMarker: '#')));
   print('');
   
   // Custom indent
   print('Custom indent (4 spaces):');
-  print(encode(data, options: EncodeOptions(indent: 4)));
+  print(encode(data, options: const EncodeOptions(indent: 4)));
   print('');
   
   // Combined options
   print('Combined (tab + length marker):');
-  print(encode(data, options: EncodeOptions(
+  print(encode(data, options: const EncodeOptions(
     delimiter: '\t',
     lengthMarker: '#',
   )));
