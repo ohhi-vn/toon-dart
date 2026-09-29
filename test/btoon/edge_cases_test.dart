@@ -69,10 +69,13 @@ void main() {
       expectRoundTrip(3.4028234663852886e38);
     });
 
-    test('-0.0 normalizes to integer 0', () {
+    test('-0.0 stays a float and keeps its sign (§9.4)', () {
       final decoded = btoonDecode(btoonEncode(-0.0));
-      expect(decoded, 0);
-      expect(decoded, isA<int>());
+      expect(decoded, 0.0);
+      expect(decoded, isA<double>());
+      expect((decoded as double).isNegative, isTrue);
+      // The wire form is a Float32 with the sign bit set.
+      expect(btoonEncode(-0.0).sublist(8), [0x05, 0x00, 0x00, 0x00, 0x80]);
     });
 
     test('subnormal float32 round-trips losslessly', () {
@@ -277,18 +280,29 @@ void main() {
   });
 
   group('string table and session', () {
-    test('empty strings participate in the string table', () {
+    test('a repeated empty string is a candidate but may not win on size', () {
+      // The empty string occurs twice, so it is a candidate; tabling it adds
+      // a count, a length prefix and padding without saving any bytes, so the
+      // inline encoding is kept.
       final bytes = btoonEncode({'a': '', 'b': ''});
-      expect(bytes[5] & 0x04, 0x04); // string table present
+      expect(bytes[5] & 0x04, 0);
       expectRoundTrip({'a': '', 'b': ''});
+    });
+
+    test('a repeated empty string is tabled when it pays off', () {
+      final value = {'a': '', 'b': '', 'c': '', 'd': ''};
+      final bytes = btoonEncode(value);
+      expect(bytes[5] & 0x04, 0x04);
+      expectRoundTrip(value);
     });
 
     test('minStringTableFrequency = 2 excludes single occurrences', () {
       const options = BtoonEncodeOptions(minStringTableFrequency: 2);
       final bytes = btoonEncode({'a': 'once'}, options: options);
       expect(bytes[5] & 0x04, 0);
-      // but a repeated string is added
-      final repeated = btoonEncode({'a': 'x', 'b': 'x'}, options: options);
+      // A repeated string is a candidate, and a long one wins the size test.
+      final repeated = btoonEncode({'a': 'a-long-value', 'b': 'a-long-value'},
+          options: options);
       expect(repeated[5] & 0x04, 0x04);
     });
 

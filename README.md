@@ -69,7 +69,9 @@ void main() {
   `Float32` / `Float64`, strings, binary blobs, arrays, and objects with
   deterministically sorted keys.
 - **String table** — repeated strings are emitted once per message and
-  referenced elsewhere (`minStringTableFrequency` controls the threshold).
+  referenced elsewhere, but only when the table makes the *complete* message
+  smaller; a one-off string stays inline (`minStringTableFrequency` controls
+  the repetition threshold).
 - **Session dictionary** — a `BtoonSession` shared across messages lets later
   messages reference earlier strings by id (`StringRef`), progressively
   shrinking the stream.
@@ -78,12 +80,23 @@ void main() {
   column views.
 - **ObjectTable** — homogeneous numeric object lists become columnar tables
   (`BtoonObjectTable`): one aligned fixed-width column per field.
+- **RecordBatch** — a top-level array of same-key rows mixing numbers and
+  strings encodes as a row-major batch with validity bitmaps. It is **opt-in**,
+  because a peer that does not support the tag rejects it:
+  ```dart
+  final bytes = btoonEncode(rows,
+      options: const BtoonEncodeOptions(peerSupportsRecordBatch: true));
+  final decoded = btoonDecode(bytes); // an ordinary list of maps
+  ```
+  Enable it only after the application has confirmed peer support, and only
+  for messages where the batch is actually smaller than the dynamic encoding.
 - **Schema mode** — with a shared `BtoonSchema` (`BtoonSchemaField`,
   `BtoonSchemaType`), keys and tags are dropped and each record is a
   positional fixed-width struct after a schema id.
 - **Deterministic** — the same input always encodes to the same bytes.
 
-The BTOON wire format is specified in `btoon_spec/spec.md`.
+The BTOON wire format is specified in `btoon_spec/spec.md`. The behavior this
+package implements and guarantees is recorded in `openspec/specs/btoon/spec.md`.
 
 ## Usage
 

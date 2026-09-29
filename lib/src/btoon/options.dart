@@ -14,12 +14,14 @@ class BtoonEncodeOptions {
   /// this message are appended to the session after encoding.
   final bool growSession;
 
-  /// Minimum number of occurrences for a string to be added to the
-  /// per-message string table.
+  /// Minimum number of occurrences for a string to be considered a
+  /// per-message string-table candidate.
   ///
-  /// The default of 1 matches the spec test vectors (§26.3, §26.5): every
-  /// string is added to the table in first-encounter order and referenced
-  /// via `StringRef`. Raise it to only table repeated strings.
+  /// Values below two are treated as two: a string that occurs once never
+  /// pays for its own table entry, so the v1 wire format never tables it
+  /// (§7.5). Raising this is a stricter filter that can forgo some size
+  /// wins; the encoder still emits the table only when the complete message
+  /// is smaller than its inline-string encoding.
   final int minStringTableFrequency;
 
   /// Whether the per-message table is built automatically or disabled.
@@ -30,6 +32,14 @@ class BtoonEncodeOptions {
   /// `no-string-table` envelope flag (0x10) is set when a session dictionary
   /// is active and the table ends up empty.
   final bool noStringTable;
+
+  /// Whether the encoder may emit the RecordBatch tag `0x0E` (§10.3).
+  ///
+  /// Defaults to false: a decoder that predates the v1.0 RecordBatch
+  /// assignment rejects the unknown tag rather than skipping it, so support
+  /// must be confirmed through application-level capability information
+  /// before this is enabled (§21).
+  final bool peerSupportsRecordBatch;
 
   /// Enables the homogeneous numeric fast path.
   final bool typedArrays;
@@ -50,9 +60,10 @@ class BtoonEncodeOptions {
   const BtoonEncodeOptions({
     this.session,
     this.growSession = true,
-    this.minStringTableFrequency = 1,
+    this.minStringTableFrequency = 2,
     this.stringTable = BtoonStringTableMode.auto,
     this.noStringTable = false,
+    this.peerSupportsRecordBatch = false,
     this.typedArrays = true,
     this.objectTables = true,
     this.schema,

@@ -304,17 +304,17 @@ ObjectTablePlan? buildObjectTablePlan(List<dynamic> list) {
 /// Callers must have already validated that every value fits [type]; a
 /// mismatch raises [BtoonEncodeError].
 void writeRawNumericData(
-  BtoonWriter writer,
+  BtoonSink sink,
   List<num> values,
   BtoonElementType type,
 ) {
   // Fast path: already a typed buffer of the exact width — write it raw.
   if (type == BtoonElementType.float64 && values is Float64List) {
-    writer.writeBytes(Uint8List.sublistView(values));
+    sink.writeBytes(Uint8List.sublistView(values));
     return;
   }
   if (type == BtoonElementType.float32 && values is Float32List) {
-    writer.writeBytes(Uint8List.sublistView(values));
+    sink.writeBytes(Uint8List.sublistView(values));
     return;
   }
   // Fast path: bulk-convert a plain int list through a typed list (native
@@ -325,19 +325,19 @@ void writeRawNumericData(
     switch (type) {
       case BtoonElementType.int8:
       case BtoonElementType.uint8:
-        writer.writeBytes(Uint8List.sublistView(Int8List.fromList(values)));
+        sink.writeBytes(Uint8List.sublistView(Int8List.fromList(values)));
         return;
       case BtoonElementType.int16:
       case BtoonElementType.uint16:
-        writer.writeBytes(Uint8List.sublistView(Int16List.fromList(values)));
+        sink.writeBytes(Uint8List.sublistView(Int16List.fromList(values)));
         return;
       case BtoonElementType.int32:
       case BtoonElementType.uint32:
-        writer.writeBytes(Uint8List.sublistView(Int32List.fromList(values)));
+        sink.writeBytes(Uint8List.sublistView(Int32List.fromList(values)));
         return;
       case BtoonElementType.int64:
       case BtoonElementType.uint64:
-        writer.writeBytes(Uint8List.sublistView(Int64List.fromList(values)));
+        sink.writeBytes(Uint8List.sublistView(Int64List.fromList(values)));
         return;
       case BtoonElementType.float32:
       case BtoonElementType.float64:
@@ -347,48 +347,48 @@ void writeRawNumericData(
   switch (type) {
     case BtoonElementType.int8:
       for (final value in values) {
-        writer.writeByte(value.toInt());
+        sink.writeByte(value.toInt());
       }
     case BtoonElementType.int16:
       for (final value in values) {
-        writer.writeInt16(value.toInt());
+        sink.writeInt16(value.toInt());
       }
     case BtoonElementType.int32:
       for (final value in values) {
-        writer.writeInt32(value.toInt());
+        sink.writeInt32(value.toInt());
       }
     case BtoonElementType.int64:
       for (final value in values) {
-        writer.writeInt64(value.toInt());
+        sink.writeInt64(value.toInt());
       }
     case BtoonElementType.uint8:
       for (final value in values) {
-        writer.writeByte(value.toInt());
+        sink.writeByte(value.toInt());
       }
     case BtoonElementType.uint16:
       for (final value in values) {
-        writer.writeUint16(value.toInt());
+        sink.writeUint16(value.toInt());
       }
     case BtoonElementType.uint32:
       for (final value in values) {
-        writer.writeUint32(value.toInt());
+        sink.writeUint32(value.toInt());
       }
     case BtoonElementType.uint64:
       for (final value in values) {
-        writer.writeUint64(value.toInt());
+        sink.writeUint64(value.toInt());
       }
     case BtoonElementType.float32:
       final buffer = Float32List(values.length);
       for (var i = 0; i < values.length; i++) {
         buffer[i] = values[i].toDouble();
       }
-      writer.writeBytes(Uint8List.sublistView(buffer));
+      sink.writeBytes(Uint8List.sublistView(buffer));
     case BtoonElementType.float64:
       final buffer = Float64List(values.length);
       for (var i = 0; i < values.length; i++) {
         buffer[i] = values[i].toDouble();
       }
-      writer.writeBytes(Uint8List.sublistView(buffer));
+      sink.writeBytes(Uint8List.sublistView(buffer));
   }
 }
 

@@ -44,6 +44,9 @@ class _DecodeState {
   });
 
   void recordInlineString(String value) {
+    // Inline strings are only tracked to grow a session dictionary after the
+    // message; skip the bookkeeping entirely when that cannot happen.
+    if (session == null || !growSession) return;
     if (_inlineSeen.add(value)) {
       inlineStrings.add(value);
     }
@@ -244,6 +247,8 @@ Object? _decodeValue(_DecodeState state, {int depth = 0}) {
       return _readTypedArray(state);
     case tagObjectTable:
       return _readObjectTable(state);
+    case tagRecordBatch:
+      return _readRecordBatch(state);
     case tagStringRef:
       return _resolveStringRef(state, _readIntValue(reader));
     default:
@@ -345,21 +350,12 @@ Object? _readTypedArray(_DecodeState state) {
   }
   final count = reader.readUint32();
   state.checkCount(count, type.size);
-  reader.skip(_readPadLen(reader));
+  reader.readPadLen(type.size);
   final values = readRawNumericData(reader, type, count);
   if (state.preserveTypedArrays) {
     return BtoonTypedArray(values, elementType: type);
   }
   return values;
-}
-
-int _readPadLen(BtoonReader reader) {
-  final padLen = reader.readByte();
-  if (padLen > 7) {
-    throw BtoonDecodeError(
-        'invalid padding length $padLen', reader.position - 1);
-  }
-  return padLen;
 }
 
 // #endregion
@@ -398,7 +394,7 @@ Object? _readObjectTable(_DecodeState state) {
           'expected a string column name', state.reader.position - 1);
     }
     final type = elementTypeOf(reader.readByte());
-    reader.skip(_readPadLen(reader));
+    reader.readPadLen(type.size);
     columns.add(readRawNumericData(reader, type, rowCount));
   }
 
@@ -411,6 +407,170 @@ Object? _readObjectTable(_DecodeState state) {
     rows.add(map);
   }
   return rows;
+}
+
+// #endregion
+
+// #region RecordBatch
+
+/// A RecordBatch field descriptor read from the wire (§10.3).
+class _RecordBatchField {
+  final String name;
+
+  /// The element selector; one of the numeric selectors, `0x0B` (string) or
+  /// `0x09` (null).
+  final int selector;
+
+  final bool nullable;
+
+  _RecordBatchField(this.name, this.selector, this.nullable);
+}
+
+/// Reads a RecordBatch value and returns an ordinary list of objects
+/// (§10.3).
+///
+/// Every count, descriptor, bitmap and value is validated against the
+/// configured limits and the remaining input before anything is allocated,
+/// so a hostile row or field count cannot trigger a large allocation or an
+/// out-of-bounds read (§24).
+Object? _readRecordBatch(_DecodeState state) {
+  final reader = state.reader;
+
+  final fieldCount = reader.readUint32();
+  // Each descriptor is at least a UInt32 name length, a selector and a
+  // nullable byte, plus the inline name bytes.
+  state.checkCount(fieldCount, 6);
+  if (fieldCount == 0) {
+    throw BtoonDecodeError('RecordBatch must declare at least one field', reader.position);
+  }
+
+  final fields = <_RecordBatchField>[];
+  for (var f = 0; f < fieldCount; f++) {
+    final nameLength = reader.readUint32();
+    if (nameLength > state.maxStringSize) {
+      throw BtoonDecodeError(
+        'RecordBatch field name length $nameLength exceeds the limit of '
+        '${state.maxStringSize}',
+        reader.position,
+      );
+    }
+    final name = _readUtf8(reader, nameLength);
+    final selector = reader.readByte();
+    if (!_isValidRecordBatchSelector(selector)) {
+      throw BtoonDecodeError(
+        'invalid RecordBatch element-type code 0x${selector.toRadixString(16)}',
+        reader.position - 1,
+      );
+    }
+    final nullableByte = reader.readByte();
+    if (nullableByte > 1) {
+      throw BtoonDecodeError(
+        'invalid RecordBatch nullable byte $nullableByte (expected 0 or 1)',
+        reader.position - 1,
+      );
+    }
+    // A string field must be nullable whenever any row is null; the
+    // descriptor itself must be self-consistent, which is checked when the
+    // bitmaps are read below.
+    fields.add(_RecordBatchField(name, selector, nullableByte == 1));
+  }
+
+  final rowCount = reader.readUint32();
+  if (rowCount > state.maxContainerCount) {
+    throw BtoonDecodeError(
+      'RecordBatch row count $rowCount exceeds the limit of '
+      '${state.maxContainerCount}',
+      reader.position,
+    );
+  }
+  // Each row needs at least one byte across all fields, plus a bit per row.
+  if (rowCount > 0 && rowCount > reader.remaining * 8) {
+    throw BtoonDecodeError(
+      'RecordBatch row count $rowCount exceeds the available input',
+      reader.position,
+    );
+  }
+
+  // Validity bitmaps, in field order, before the row values. An all-null
+  // field carries no bitmap.
+  final bitmaps = <Uint8List>[];
+  for (final field in fields) {
+    if (!field.nullable) {
+      bitmaps.add(Uint8List(0));
+      continue;
+    }
+    final byteCount = (rowCount + 7) ~/ 8;
+    if (byteCount > reader.remaining) {
+      throw BtoonDecodeError(
+        'RecordBatch validity bitmap exceeds the available input',
+        reader.position,
+      );
+    }
+    final bitmap = reader.readBytes(byteCount);
+    _validateUnusedBits(bitmap, rowCount);
+    bitmaps.add(bitmap);
+  }
+
+  // Row-major values, field by field, in schema order.
+  final rows = <Map<String, dynamic>>[];
+  for (var r = 0; r < rowCount; r++) {
+    final row = <String, dynamic>{};
+    for (var f = 0; f < fields.length; f++) {
+      final field = fields[f];
+      // An all-null field uses the null selector with no bitmap, so its value
+      // is always null and never occupies bytes.
+      final present = field.selector != elementNull &&
+          (!field.nullable || _isPresent(bitmaps[f], r));
+      row[field.name] = present ? _readRecordBatchValue(state, field) : null;
+    }
+    rows.add(row);
+  }
+  return rows;
+}
+
+/// Whether the value for row [row] is present according to [bitmap].
+bool _isPresent(Uint8List bitmap, int row) {
+  return (bitmap[row >> 3] & (1 << (row & 7))) != 0;
+}
+
+/// Rejects non-zero bits that no row can use in the final bitmap byte
+/// (§10.3: unused high bits MUST be zero).
+void _validateUnusedBits(Uint8List bitmap, int rowCount) {
+  if (rowCount == 0 || bitmap.isEmpty) return;
+  final usedBits = rowCount & 7;
+  if (usedBits == 0) return;
+  final mask = (1 << usedBits) - 1;
+  final lastByte = bitmap[bitmap.length - 1] & ~mask & 0xFF;
+  if (lastByte != 0) {
+    throw BtoonDecodeError(
+      'RecordBatch validity bitmap has non-zero unused bits',
+      lastByte,
+    );
+  }
+}
+
+bool _isValidRecordBatchSelector(int selector) {
+  if (selector >= elementInt8 && selector <= elementFloat64) return true;
+  return selector == elementString || selector == elementNull;
+}
+
+/// Reads one present RecordBatch value for [field].
+Object? _readRecordBatchValue(_DecodeState state, _RecordBatchField field) {
+  final reader = state.reader;
+  if (field.selector == elementString) {
+    // A string value is Length::UInt32 plus UTF-8 bytes, with no tag. A
+    // zero-length string is present and distinct from null.
+    final length = reader.readUint32();
+    if (length > state.maxStringSize) {
+      throw BtoonDecodeError(
+        'RecordBatch string length $length exceeds the limit of '
+        '${state.maxStringSize}',
+        reader.position,
+      );
+    }
+    return _readUtf8(reader, length);
+  }
+  return _readSchemaNumeric(reader, field.selector);
 }
 
 // #endregion
@@ -460,7 +620,16 @@ Object? _decodeSchemaFieldValue(
     case elementNull:
       return null;
     case elementBool:
-      return reader.readByte() != 0;
+      // §15.2: a schema bool is exactly 0 or 1. Any other byte is a schema
+      // violation rather than a truthy value.
+      final b = reader.readByte();
+      if (b > 1) {
+        throw BtoonDecodeError(
+          'invalid schema bool byte $b (expected 0 or 1)',
+          reader.position - 1,
+        );
+      }
+      return b == 1;
     case elementString:
       return _readStringValue(state);
     case elementBinary:

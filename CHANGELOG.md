@@ -1,5 +1,56 @@
 ## Unreleased
 
+### BTOON: v1.0 spec conformance
+
+Brings the BTOON codec in line with the stable v1.0 wire format. The wire
+version byte stays `0x01`; `0x0E` is assigned to RecordBatch as part of v1.0.
+
+**Breaking — encoded bytes can change for the same value:**
+
+- **String table selection (§7.5, §17)**: a per-message table now only
+  considers strings that occur at least twice and are not already in the
+  session dictionary (`minStringTableFrequency` now defaults to `2`, and
+  values below two are treated as two). The table is emitted only when the
+  *complete* message — envelope, table section, references, flags and padding
+  — is strictly smaller than the inline-string encoding; a tie keeps strings
+  inline. Single-use strings are therefore no longer tabled by default.
+  Previously, every string was tabled unconditionally.
+- **Floating zero (§9.4)**: `0.0` and `-0.0` now encode as `Float32` instead
+  of collapsing into the integer `SmallInt` `0`, and `-0.0` keeps its sign
+  bit on the wire and after a round trip.
+
+Decoded values are unchanged in both cases; only the byte layout differs.
+Applications that compare encoded bytes, hashes or golden files must refresh
+them against the §26 vectors in `test/btoon/spec_vectors_test.dart`.
+
+New behavior:
+
+- **RecordBatch (`0x0E`, §10.3)**: a top-level array of at least two objects
+  with identical keys, one non-null type per field, and at least one numeric
+  plus one string field is encoded as a row-major batch with validity
+  bitmaps. It is sent only when the peer is known to support the tag — opt in
+  with the new `BtoonEncodeOptions.peerSupportsRecordBatch` (default
+  `false`) — and only when the complete RecordBatch message is strictly
+  smaller than the dynamic encoding. Decoding returns an ordinary list of
+  maps, so it is transparent to callers. Numeric-only object arrays keep
+  using `ObjectTable`.
+- **Typed-payload alignment is validated on decode (§16, §24)**: `PadLen` must
+  be in `0..7`, must be exactly the padding that aligns the payload, and every
+  padding byte must be zero. Previously only the range was checked.
+- **Schema value validation (§15.2)**: a schema field value must fit its
+  declared numeric width (no silent truncation), and a schema boolean must be
+  exactly `0` or `1` on decode.
+
+Internal:
+
+- The encoder counts string frequencies during the collect pass and computes
+  the exact table-versus-inline message-size difference in closed form, so the
+  v1 size rule costs no extra traversal. `BtoonWriter` and the new
+  `BtoonCounter` share one `BtoonSink` write surface, so measured and emitted
+  layouts cannot drift.
+- Inline strings are only tracked for session growth when a session is
+  actually being grown.
+
 ### BTOON: v1.0-draft spec compliance
 
 Implements the new BTOON v1.0-draft specification (§ references below):
@@ -8,7 +59,7 @@ Implements the new BTOON v1.0-draft specification (§ references below):
   per-message table in first-encounter order (`minStringTableFrequency`
   now defaults to 1), matching the spec test vectors. New
   `noStringTable` encode option maps to the no-table envelope flag 0x10
-  (§7.5.1).
+  (§7.5.1). *Superseded by the v1.0 rule above.*
 - **ObjectTable column names (§14)**: with a session dictionary active,
   column names outside the dictionary are added to the per-message table
   (instead of failing), so they can be referenced as `StringRef`s; the
@@ -50,10 +101,10 @@ Encode/decode hot paths reworked (see `benchmark/btoon_benchmark.dart`):
 - ObjectTable encode: the plan is computed once and memoized across the
   encode passes, rows are no longer copied, columns are detected in a
   single pass and written by direct row indexing.
-- String table: default mode assigns table indices during the collect
-  pass (no occurrence counting); schema derivation no longer copies row
-  maps. Overall: small maps ~1.8x, nested maps ~1.6x, object tables ~2x,
-  string lists ~2.3x, schema mode ~1.7x faster to encode.
+- String table: the v1 repeated-string floor is applied during the collect
+  pass and the table/inline choice is made from the collected frequencies, so
+  the size rule adds no extra traversal. Schema derivation no longer copies
+  row maps.
 
 ## 0.2.0
 

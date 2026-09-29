@@ -66,6 +66,10 @@ const int tagStringRef = 0x0B;
 const int tagTypedArray = 0x0C;
 const int tagObjectTable = 0x0D;
 
+/// RecordBatch: shared field set plus row-major mixed records (§10.3).
+/// Assigned in v1.0; a decoder that does not support it rejects the tag.
+const int tagRecordBatch = 0x0E;
+
 /// Inline `SmallInt` values occupy the bare bytes `0x20`..`0x9F`; the value
 /// is `byte - smallIntBias`, covering `[-32, 95]` with no payload bytes
 /// (§8.2).

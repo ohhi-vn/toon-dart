@@ -1,9 +1,12 @@
 /// Low-level byte I/O for BTOON encoding and decoding.
 ///
 /// All multi-byte integers and floats are little-endian (never varints).
-/// Both [BtoonWriter] and [BtoonReader] can pad to an alignment measured
-/// from the start of the message, so decoders can expose zero-copy views of
-/// `TypedArray` / columnar `ObjectTable` payloads.
+/// The [BtoonSink] write surface is implemented twice — by [BtoonWriter] to
+/// materialize bytes and by [BtoonCounter] to measure an encoding's exact
+/// length — so both sides pad and offset identically and can share one
+/// traversal. That lets a decoder expose zero-copy views of `TypedArray` /
+/// columnar `ObjectTable` payloads and lets the encoder compare complete
+/// candidate messages without building each one twice.
 library btoon_io;
 
 import 'dart:convert';
@@ -65,11 +68,115 @@ int compareUtf8Bytes(String a, String b) {
 /// The UTF-8 bytes of [value].
 Uint8List utf8BytesOf(String value) => utf8.encode(value);
 
+/// The number of zero padding bytes that must follow a `PadLen` byte so the
+/// next byte written starts at an offset divisible by [elementSize].
+///
+/// Offsets are measured from the start of the message, so this is the single
+/// place that decides how TypedArray and ObjectTable payloads are aligned.
+/// [nextOffset] is the offset the payload would start at *before* the padding
+/// is inserted, i.e. the offset immediately after the `PadLen` byte.
+int elementPadLength(int nextOffset, int elementSize) {
+  return (elementSize - (nextOffset % elementSize)) % elementSize;
+}
+
+/// The output side of the BTOON encoder.
+///
+/// Two implementations share one traversal: [BtoonWriter] materializes bytes,
+/// and [BtoonCounter] only accumulates the message length. Keeping the write
+/// surface identical guarantees that a measured length and an emitted length
+/// describe the same layout.
+abstract class BtoonSink {
+  /// Total bytes written so far (the current message offset).
+  int get length;
+
+  void writeByte(int value);
+
+  void writeBytes(List<int> bytes);
+
+  void writeUint16(int value);
+
+  void writeInt16(int value);
+
+  void writeUint32(int value);
+
+  void writeInt32(int value);
+
+  void writeUint64(int value);
+
+  void writeInt64(int value);
+
+  void writeFloat32(double value);
+
+  void writeFloat64(double value);
+
+  void writePadding(int count);
+
+  /// Pads with zero bytes so [length] becomes a multiple of [alignment].
+  void align(int alignment);
+
+  /// The exact `PadLen` value to write so the next byte written starts at an
+  /// offset aligned to [elementSize] (§16).
+  int padLengthFor(int elementSize);
+}
+
+/// Counts the bytes a message would occupy without materializing them.
+class BtoonCounter implements BtoonSink {
+  int _length = 0;
+
+  @override
+  int get length => _length;
+
+  @override
+  void writeByte(int value) => _length += 1;
+
+  @override
+  void writeBytes(List<int> bytes) => _length += bytes.length;
+
+  @override
+  void writeUint16(int value) => _length += 2;
+
+  @override
+  void writeInt16(int value) => _length += 2;
+
+  @override
+  void writeUint32(int value) => _length += 4;
+
+  @override
+  void writeInt32(int value) => _length += 4;
+
+  @override
+  void writeUint64(int value) => _length += 8;
+
+  @override
+  void writeInt64(int value) => _length += 8;
+
+  @override
+  void writeFloat32(double value) => _length += 4;
+
+  @override
+  void writeFloat64(double value) => _length += 8;
+
+  @override
+  void writePadding(int count) {
+    if (count <= 0) return;
+    _length += count;
+  }
+
+  @override
+  void align(int alignment) {
+    final remainder = _length % alignment;
+    if (remainder != 0) _length += alignment - remainder;
+  }
+
+  @override
+  int padLengthFor(int elementSize) => elementPadLength(_length + 1, elementSize);
+}
+
 /// A growable little-endian byte writer.
 ///
 /// Backed by a single growable [Uint8List] with a [ByteData] view over it,
 /// so every multi-byte value is one native store instead of per-byte calls.
-class BtoonWriter {
+class BtoonWriter implements BtoonSink {
   /// A pre-sized initial capacity chosen to cover the fixed envelope plus a
   /// typical small body without regrowth.
   static const int _initialCapacity = 64;
@@ -79,6 +186,7 @@ class BtoonWriter {
   int _length = 0;
 
   /// Total number of bytes written so far (the current message offset).
+  @override
   int get length => _length;
 
   void _ensure(int additional) {
@@ -95,11 +203,13 @@ class BtoonWriter {
     _view = ByteData.sublistView(grown);
   }
 
+  @override
   void writeByte(int value) {
     _ensure(1);
     _buffer[_length++] = value & 0xFF;
   }
 
+  @override
   void writeBytes(List<int> bytes) {
     final count = bytes.length;
     _ensure(count);
@@ -107,34 +217,28 @@ class BtoonWriter {
     _length += count;
   }
 
-  /// Appends the bytes of [other] without [other] having to produce a
-  /// compacted copy first.
-  void writeWriter(BtoonWriter other) {
-    final count = other._length;
-    if (count == 0) return;
-    _ensure(count);
-    _buffer.setRange(_length, _length + count, other._buffer);
-    _length += count;
-  }
-
+  @override
   void writeUint16(int value) {
     _ensure(2);
     _view.setUint16(_length, value, Endian.little);
     _length += 2;
   }
 
+  @override
   void writeInt16(int value) {
     _ensure(2);
     _view.setInt16(_length, value, Endian.little);
     _length += 2;
   }
 
+  @override
   void writeUint32(int value) {
     _ensure(4);
     _view.setUint32(_length, value, Endian.little);
     _length += 4;
   }
 
+  @override
   void writeInt32(int value) {
     _ensure(4);
     _view.setInt32(_length, value, Endian.little);
@@ -142,6 +246,7 @@ class BtoonWriter {
   }
 
   /// Writes a 64-bit value using two 32-bit halves (web-safe).
+  @override
   void writeUint64(int value) {
     _ensure(8);
     _view.setUint32(_length, value & 0xFFFFFFFF, Endian.little);
@@ -149,6 +254,7 @@ class BtoonWriter {
     _length += 8;
   }
 
+  @override
   void writeInt64(int value) {
     _ensure(8);
     _view.setInt32(_length, value & 0xFFFFFFFF, Endian.little);
@@ -156,18 +262,21 @@ class BtoonWriter {
     _length += 8;
   }
 
+  @override
   void writeFloat32(double value) {
     _ensure(4);
     _view.setFloat32(_length, value, Endian.little);
     _length += 4;
   }
 
+  @override
   void writeFloat64(double value) {
     _ensure(8);
     _view.setFloat64(_length, value, Endian.little);
     _length += 8;
   }
 
+  @override
   void writePadding(int count) {
     if (count <= 0) return;
     _ensure(count);
@@ -177,6 +286,7 @@ class BtoonWriter {
 
   /// Pads with zero bytes so the current length becomes a multiple of
   /// [alignment], measured from the start of the message.
+  @override
   void align(int alignment) {
     final remainder = _length % alignment;
     if (remainder != 0) {
@@ -192,6 +302,13 @@ class BtoonWriter {
     if (_length * 8 >= _buffer.length * 7) return view;
     return Uint8List.fromList(view);
   }
+
+  /// The exact `PadLen` value that follows at the current offset.
+  ///
+  /// Shares [padLengthFor] with the decoder so both sides agree on where a
+  /// typed payload starts.
+  @override
+  int padLengthFor(int elementSize) => elementPadLength(_length + 1, elementSize);
 }
 
 /// A bounds-checked little-endian byte reader.
@@ -312,6 +429,31 @@ class BtoonReader {
       }
     }
     offset += count;
+  }
+
+  /// Reads a `PadLen` byte for a payload of [elementSize]-wide elements and
+  /// validates the padding it declares (§16, §24).
+  ///
+  /// The declared length must be within `0..7`, must be exactly the padding
+  /// needed to align the payload that follows, and every padding byte must be
+  /// zero. Accepting any other value would let a hostile or non-canonical
+  /// message place a numeric payload at a misaligned offset.
+  int readPadLen(int elementSize) {
+    final padLengthOffset = offset;
+    final padLen = readByte();
+    if (padLen > 7) {
+      throw BtoonDecodeError('invalid padding length $padLen', padLengthOffset);
+    }
+    final expected = elementPadLength(offset, elementSize);
+    if (padLen != expected) {
+      throw BtoonDecodeError(
+        'padding length $padLen does not align a $elementSize-byte element '
+        '(expected $expected)',
+        padLengthOffset,
+      );
+    }
+    skipZeroPadding(padLen);
+    return padLen;
   }
 
   void _check(int count) {

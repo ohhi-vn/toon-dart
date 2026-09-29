@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:toon_format/toon_format.dart';
+import 'package:toon_format/src/btoon/options.dart' show BtoonStringTableMode;
 
 void expectRoundTrip(Object? value,
     {BtoonEncodeOptions? encodeOptions,
@@ -139,10 +140,11 @@ void main() {
       expectRoundTrip(1.0e39); // float64
     });
 
-    test('-0.0 normalizes to 0 (integer)', () {
+    test('-0.0 stays a float and keeps its sign (§9.4)', () {
       final decoded = btoonDecode(btoonEncode(-0.0));
-      expect(decoded, 0);
-      expect(decoded, isA<int>());
+      expect(decoded, 0.0);
+      expect(decoded, isA<double>());
+      expect((decoded as double).isNegative, isTrue);
     });
 
     test('non-finite floats', () {
@@ -333,9 +335,10 @@ void main() {
         {'id': 2, 'x': 2.5},
       ];
       final bytes = btoonEncode(rows);
-      // The column names land in the per-message string table (flag 0x04);
-      // the body itself starts after the aligned table.
-      expect(bytes[5] & 0x04, 0x04);
+      // Column names occur once each, so they stay inline and the body
+      // starts right after the 8-byte header.
+      expect(bytes[5] & 0x04, 0);
+      expect(bytes[8], 0x0D); // tagObjectTable
       expectRoundTrip(rows);
     });
 
@@ -376,19 +379,71 @@ void main() {
       final value = {
         'name': 'Alice',
         'friend': 'Alice',
-        'age': 30,
+        'other': 'Alice',
       };
       final bytes = btoonEncode(value);
-      // "Alice" appears twice → per-message string table present (flag 0x04)
+      // "Alice" occurs three times → the per-message table is present
+      // (flag 0x04) and each occurrence is a StringRef.
       expect(bytes[5] & 0x04, 0x04);
       expectRoundTrip(value);
     });
 
-    test('single-occurrence strings use the string table by default (§26.3)',
-        () {
+    test('single-occurrence strings stay inline (§7.5, §26.3)', () {
       final bytes = btoonEncode({'a': 'once'});
-      expect(bytes[5] & 0x04, 0x04);
+      expect(bytes[5] & 0x04, 0); // no table flag
+      expect(bytes[8], 0x0A); // tagObject
       expectRoundTrip({'a': 'once'});
+    });
+
+    test('repeated strings use a per-message table when it shrinks the message',
+        () {
+      // Three occurrences of a 5-byte value: tabling replaces 3 x 10 inline
+      // bytes with 3 x 2 ref bytes and costs a 16-byte table section.
+      final value = {
+        'a': 'Alice',
+        'b': 'Alice',
+        'c': 'Alice',
+      };
+      final bytes = btoonEncode(value);
+      expect(bytes[5] & 0x04, 0x04);
+      expect(bytes.length, lessThan(btoonEncode(value,
+          options: const BtoonEncodeOptions(
+              stringTable: BtoonStringTableMode.off))
+          .length));
+      expectRoundTrip(value);
+    });
+
+    test('a table that only ties the inline size stays inline (§7.5)', () {
+      // Two occurrences of a 5-byte value save exactly as much as the table
+      // section costs, and a tie must keep strings inline.
+      final value = {
+        'name': 'Alice',
+        'friend': 'Alice',
+      };
+      final bytes = btoonEncode(value);
+      expect(bytes[5] & 0x04, 0);
+      expectRoundTrip(value);
+    });
+
+    test('a table that would not shrink the message is not emitted', () {
+      // Repeating a 1-character string saves 4 bytes per extra occurrence
+      // but costs a count, a length prefix and padding, so inline wins.
+      final value = {'a': 'x', 'b': 'x'};
+      final bytes = btoonEncode(value);
+      expect(bytes[5] & 0x04, 0);
+      expect(bytes[8], 0x0A);
+      expectRoundTrip(value);
+    });
+
+    test('a higher minStringTableFrequency is a stricter filter', () {
+      // With a threshold of 3, a twice-repeated string is no longer a
+      // candidate, so it stays inline.
+      final value = {'a': 'x', 'b': 'x'};
+      final bytes = btoonEncode(value,
+          options: const BtoonEncodeOptions(minStringTableFrequency: 3));
+      expect(bytes[5] & 0x04, 0);
+      expectRoundTrip(value,
+          encodeOptions: const BtoonEncodeOptions(minStringTableFrequency: 3));
     });
 
     test('noStringTable keeps strings inline (§7.5.1, §26.3)', () {
@@ -404,11 +459,13 @@ void main() {
           encodeOptions: const BtoonEncodeOptions(noStringTable: true));
     });
 
-    test('minStringTableFrequency = 1 puts every string in the table', () {
+    test('minStringTableFrequency = 1 still never tables a one-off', () {
+      // §7.5 requires at least two occurrences, so a configured threshold of
+      // one cannot put a single-use string in the table.
       final value = {'a': 'x', 'b': 'y'};
       final bytes = btoonEncode(value,
           options: const BtoonEncodeOptions(minStringTableFrequency: 1));
-      expect(bytes[5] & 0x04, 0x04);
+      expect(bytes[5] & 0x04, 0);
       expectRoundTrip(value,
           encodeOptions: const BtoonEncodeOptions(minStringTableFrequency: 1));
     });

@@ -9,11 +9,14 @@
 ///     8-byte-aligned body;
 ///   * inline `SmallInt` values and fixed-width little-endian integers and
 ///     floats (never varints);
-///   * strings deduplicated against a session dictionary and per-message
-///     string table via `StringRef`;
+///   * strings deduplicated against a session dictionary and a per-message
+///     string table via `StringRef`, where the table is emitted only when it
+///     makes the complete message smaller;
 ///   * homogeneous numeric lists as `TypedArray` and homogeneous object
 ///     lists as columnar `ObjectTable`, both padded so decoders can expose
 ///     zero-copy views;
+///   * mixed numeric/string row arrays as an opt-in `RecordBatch`
+///     (`peerSupportsRecordBatch`, default off);
 ///   * optional schema mode that drops keys and tags entirely.
 ///
 /// Every input maps to exactly one byte sequence (deterministic encoding).

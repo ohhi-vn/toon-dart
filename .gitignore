@@ -15,3 +15,5 @@ dist/
 *.ipr
 *.iws
 .DS_Store
+._*
+.opencode

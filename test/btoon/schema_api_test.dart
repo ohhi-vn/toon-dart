@@ -7,6 +7,53 @@ import 'package:toon_format/src/btoon/numeric.dart' show validateNumericRange;
 import 'package:toon_format/src/btoon/options.dart' show BtoonStringTableMode;
 
 void main() {
+  group('schema field width validation (§15.2)', () {
+    test('an int8 field rejects an out-of-range value', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('a', elementCode: c.elementInt8),
+      ]);
+      expect(
+        () => btoonEncodeWithSchema({'a': 128}, schema),
+        throwsA(isA<BtoonEncodeError>()),
+      );
+      expect(
+        () => btoonEncodeWithSchema({'a': -129}, schema),
+        throwsA(isA<BtoonEncodeError>()),
+      );
+      expect(btoonEncodeWithSchema({'a': 127}, schema), isNotEmpty);
+    });
+
+    test('a uint16 field rejects a negative value', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('hp', elementCode: c.elementUint16),
+      ]);
+      expect(
+        () => btoonEncodeWithSchema({'hp': -1}, schema),
+        throwsA(isA<BtoonEncodeError>()),
+      );
+      expect(
+        () => btoonEncodeWithSchema({'hp': 70000}, schema),
+        throwsA(isA<BtoonEncodeError>()),
+      );
+      expect(btoonEncodeWithSchema({'hp': 65535}, schema), isNotEmpty);
+    });
+
+    test('an int32 field rejects a 64-bit value', () {
+      final schema = BtoonSchema([
+        const BtoonSchemaField('n', elementCode: c.elementInt32),
+      ]);
+      expect(
+        () => btoonEncodeWithSchema({'n': 2147483648}, schema),
+        throwsA(isA<BtoonEncodeError>()),
+      );
+      expect(
+        btoonDecodeWithSchema(
+            btoonEncodeWithSchema({'n': 2147483647}, schema), schema),
+        {'n': 2147483647},
+      );
+    });
+  });
+
   group('btoonEncodeWithSchema / btoonDecodeWithSchema', () {
     test('single map round-trips with typed fields', () {
       final schema = BtoonSchema([
